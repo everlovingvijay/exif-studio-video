@@ -255,7 +255,7 @@ const MP4Editor = (function () {
       const tkhd = trakChildren.find(b => b.type === 'tkhd');
       if (tkhd) {
         const v = view.getUint8(tkhd.payloadOffset);
-        const matrixOffset = tkhd.payloadOffset + (v === 1 ? 48 : 36);
+        const matrixOffset = tkhd.payloadOffset + (v === 1 ? 52 : 40);
         const a = view.getInt32(matrixOffset, false);
         const b = view.getInt32(matrixOffset + 4, false);
         const c = view.getInt32(matrixOffset + 12, false);
@@ -267,22 +267,38 @@ const MP4Editor = (function () {
         else if (a === -0x10000 && b === 0 && c === 0 && d === -0x10000) rot = 180;
         else if (a === 0 && b === -0x10000 && c === 0x10000 && d === 0) rot = 270;
 
-        const wOffset = tkhd.payloadOffset + tkhd.payloadSize - 8;
-        const hOffset = tkhd.payloadOffset + tkhd.payloadSize - 4;
-        const w = (view.getUint32(wOffset, false) >> 16);
-        const h = (view.getUint32(hOffset, false) >> 16);
+        const wOffset = tkhd.payloadOffset + (v === 1 ? 88 : 76);
+        const hOffset = tkhd.payloadOffset + (v === 1 ? 92 : 80);
+        const rawW = (view.getUint32(wOffset, false) >> 16);
+        const rawH = (view.getUint32(hOffset, false) >> 16);
 
-        if (w > 0 && h > 0 && result.width === 0) {
-          result.width = w;
-          result.height = h;
+        // Check if track is a video track via mdia -> hdlr
+        let isVideo = (rawW > 0 && rawH > 0);
+        const mdia = trakChildren.find(b => b.type === 'mdia');
+        if (mdia) {
+          const mdiaChildren = parseBoxTree(moovBuffer, mdia.payloadOffset, mdia.payloadSize);
+          const hdlr = mdiaChildren.find(b => b.type === 'hdlr');
+          if (hdlr && hdlr.payloadSize >= 12) {
+            const hType = readASCII(view, hdlr.payloadOffset + 8, 4);
+            if (hType === 'vide') isVideo = true;
+            else if (hType === 'soun' || hType === 'hint' || hType === 'meta') isVideo = false;
+          }
+        }
+
+        if (isVideo && result.width === 0 && rawW > 0 && rawH > 0) {
+          result.width = (rot === 90 || rot === 270) ? rawH : rawW;
+          result.height = (rot === 90 || rot === 270) ? rawW : rawH;
+          result.rawWidth = rawW;
+          result.rawHeight = rawH;
           result.rotation = rot;
         }
 
         result.tracks.push({
           tkhdOffset: tkhd.payloadOffset,
-          width: w,
-          height: h,
-          rotation: rot
+          width: rawW,
+          height: rawH,
+          rotation: rot,
+          isVideo
         });
       }
     }
@@ -538,9 +554,11 @@ const MP4Editor = (function () {
   }
 
   /**
-   * Updates rotation matrix in the first video track's 'tkhd' box.
+   * Updates rotation matrix in the video track's 'tkhd' box.
+   * Modifies ONLY the 36-byte matrix, leaving track volume, reserved bytes,
+   * width, and height 100% intact.
    */
-  function updateRotationMatrix(moovBytes, rotationDeg, width, height) {
+  function updateRotationMatrix(moovBytes, rotationDeg) {
     const view = new DataView(moovBytes.buffer, moovBytes.byteOffset, moovBytes.byteLength);
     const children = parseBoxTree(moovBytes.buffer, moovBytes.byteOffset + 8, moovBytes.byteLength - 8);
     const traks = children.filter(b => b.type === 'trak');
@@ -548,38 +566,82 @@ const MP4Editor = (function () {
     for (const trak of traks) {
       const trakChildren = parseBoxTree(moovBytes.buffer, trak.payloadOffset, trak.payloadSize);
       const tkhd = trakChildren.find(b => b.type === 'tkhd');
-      if (tkhd) {
-        const v = view.getUint8(tkhd.payloadOffset);
-        const matrixOffset = tkhd.payloadOffset + (v === 1 ? 48 : 36);
+      if (!tkhd) continue;
 
-        // Standard fixed-point matrix:
-        // [a, b, u, c, d, v, x, y, w]
-        let a = 0x00010000, b = 0, c = 0, d = 0x00010000, x = 0, y = 0;
-        const wFixed = width << 16;
-        const hFixed = height << 16;
+      const v = view.getUint8(tkhd.payloadOffset);
+      const wOffset = tkhd.payloadOffset + (v === 1 ? 88 : 76);
+      const hOffset = tkhd.payloadOffset + (v === 1 ? 92 : 80);
+      const rawWFixed = view.getUint32(wOffset, false);
+      const rawHFixed = view.getUint32(hOffset, false);
 
-        if (rotationDeg === 90) {
-          a = 0; b = 0x00010000; c = -0x00010000; d = 0;
-          x = hFixed; y = 0;
-        } else if (rotationDeg === 180) {
-          a = -0x00010000; b = 0; c = 0; d = -0x00010000;
-          x = wFixed; y = hFixed;
-        } else if (rotationDeg === 270) {
-          a = 0; b = -0x00010000; c = 0x00010000; d = 0;
-          x = 0; y = wFixed;
+      // Check if this track is video
+      let isVideo = (rawWFixed > 0 && rawHFixed > 0);
+      const mdia = trakChildren.find(b => b.type === 'mdia');
+      if (mdia) {
+        const mdiaChildren = parseBoxTree(moovBytes.buffer, mdia.payloadOffset, mdia.payloadSize);
+        const hdlr = mdiaChildren.find(b => b.type === 'hdlr');
+        if (hdlr && hdlr.payloadSize >= 12) {
+          const hType = readASCII(view, hdlr.payloadOffset + 8, 4);
+          if (hType === 'vide') isVideo = true;
+          else if (hType === 'soun' || hType === 'hint' || hType === 'meta') isVideo = false;
         }
-
-        view.setInt32(matrixOffset, a, false);
-        view.setInt32(matrixOffset + 4, b, false);
-        view.setInt32(matrixOffset + 8, 0, false);
-        view.setInt32(matrixOffset + 12, c, false);
-        view.setInt32(matrixOffset + 16, d, false);
-        view.setInt32(matrixOffset + 20, 0, false);
-        view.setInt32(matrixOffset + 24, x, false);
-        view.setInt32(matrixOffset + 28, y, false);
-        view.setInt32(matrixOffset + 32, 0x40000000, false);
-        break; // Only rotate video track
       }
+
+      if (!isVideo) continue;
+
+      // ISOBMFF TrackHeaderBox: matrix begins at byte 40 for v0, byte 52 for v1
+      const matrixOffset = tkhd.payloadOffset + (v === 1 ? 52 : 40);
+
+      // Standard fixed-point matrix:
+      // [ a  b  u ]
+      // [ c  d  v ]
+      // [ x  y  w ]
+      // a, b, c, d, x, y are 16.16 fixed point.
+      // u, v, w are 2.30 fixed point (u=0, v=0, w=1.0 = 0x40000000).
+      let a = 0x00010000, b = 0, c = 0, d = 0x00010000, x = 0, y = 0;
+
+      if (rotationDeg === 90) {
+        a = 0;
+        b = 0x00010000;
+        c = -0x00010000;
+        d = 0;
+        x = rawHFixed;
+        y = 0;
+      } else if (rotationDeg === 180) {
+        a = -0x00010000;
+        b = 0;
+        c = 0;
+        d = -0x00010000;
+        x = rawWFixed;
+        y = rawHFixed;
+      } else if (rotationDeg === 270) {
+        a = 0;
+        b = -0x00010000;
+        c = 0x00010000;
+        d = 0;
+        x = 0;
+        y = rawWFixed;
+      } else {
+        // 0 degrees / identity
+        a = 0x00010000;
+        b = 0;
+        c = 0;
+        d = 0x00010000;
+        x = 0;
+        y = 0;
+      }
+
+      view.setInt32(matrixOffset, a, false);
+      view.setInt32(matrixOffset + 4, b, false);
+      view.setInt32(matrixOffset + 8, 0, false);       // u = 0
+      view.setInt32(matrixOffset + 12, c, false);
+      view.setInt32(matrixOffset + 16, d, false);
+      view.setInt32(matrixOffset + 20, 0, false);      // v = 0
+      view.setInt32(matrixOffset + 24, x, false);
+      view.setInt32(matrixOffset + 28, y, false);
+      view.setInt32(matrixOffset + 32, 0x40000000, false); // w = 1.0 (0x40000000)
+
+      break; // Only rotate video track
     }
   }
 
@@ -735,10 +797,9 @@ const MP4Editor = (function () {
       const mTimeSec = updates.modifyDate ? dateToMacSeconds(updates.modifyDate) : null;
       updateTimestamps(newMoov, cTimeSec, mTimeSec);
 
-      // 6. Update rotation in newMoov
+      // 6. Update rotation in newMoov only if explicitly requested
       if (typeof updates.rotation === 'number') {
-        const meta = extractMoovMetadata(moovBuffer, moovBox);
-        updateRotationMatrix(newMoov, updates.rotation, meta.width || 1920, meta.height || 1080);
+        updateRotationMatrix(newMoov, updates.rotation);
       }
 
       // 7. C2PA box preparation
