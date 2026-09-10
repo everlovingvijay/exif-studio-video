@@ -89,6 +89,8 @@ document.addEventListener('DOMContentLoaded', () => {
   let map = null;
   let marker = null;
   let selectedRotation = 0;
+  let originalRotation = 0;
+  let userChangedRotation = false;
   let activeC2PA = null;
   let stripC2PAFlag = false;
 
@@ -389,7 +391,10 @@ document.addEventListener('DOMContentLoaded', () => {
       c2paValHash.textContent = 'Auto-calculated on save';
     }
 
-    setRotation(meta.rotation || 0);
+    originalRotation = meta.rotation || 0;
+    selectedRotation = originalRotation;
+    userChangedRotation = false;
+    updateRotationUI(selectedRotation, false);
   }
 
   // C2PA Buttons
@@ -550,13 +555,23 @@ document.addEventListener('DOMContentLoaded', () => {
   });
 
   // Rotation Selector & Live Preview
-  function setRotation(deg) {
+  function updateRotationUI(deg, applyTransform = true) {
     selectedRotation = deg;
     rotationCards.forEach((c) => {
       c.classList.toggle('selected', parseInt(c.dataset.deg, 10) === deg);
     });
-    videoPlayer.style.transform = `rotate(${deg}deg)`;
-    videoPlayer.style.transition = 'transform 0.3s ease';
+    if (applyTransform) {
+      const relDeg = (deg - originalRotation + 360) % 360;
+      videoPlayer.style.transform = relDeg ? `rotate(${relDeg}deg)` : 'none';
+      videoPlayer.style.transition = 'transform 0.3s ease';
+    } else {
+      videoPlayer.style.transform = 'none';
+    }
+  }
+
+  function setRotation(deg) {
+    userChangedRotation = (deg !== originalRotation);
+    updateRotationUI(deg, true);
   }
 
   rotationCards.forEach((card) => {
@@ -646,7 +661,7 @@ document.addEventListener('DOMContentLoaded', () => {
         modifyDate: mDate,
         location,
         tags,
-        rotation: selectedRotation,
+        rotation: userChangedRotation ? selectedRotation : undefined,
         c2pa: activeC2PA,
         stripC2PA: stripC2PAFlag,
         scrubAll: false
