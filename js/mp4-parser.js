@@ -221,10 +221,106 @@ const MP4Editor = (function () {
         copyright: '',
         make: '',
         model: '',
-        software: ''
+        software: '',
+        lensModel: '',
+        focalLength35mm: '',
+        fNumber: '',
+        horizontalAccuracy: ''
+      },
+      stream: {
+        videoCodec: '',
+        compressorName: '',
+        bitDepth: 24,
+        frameRate: 0,
+        cleanAperture: '',
+        audioFormat: '',
+        audioChannels: 0,
+        audioSampleRate: 0,
+        audioBitsPerSample: 16
       },
       tracks: []
     };
+
+    // Helper: Parse QuickTime & iTunes 'meta' box (keys + ilst)
+    function parseMetaBox(buf, metaBox) {
+      let pOffset = metaBox.payloadOffset;
+      let pSize = metaBox.payloadSize;
+      if (pSize >= 12) {
+        const candidate = readASCII(view, pOffset + 8, 4);
+        if (candidate === 'hdlr' || candidate === 'keys' || candidate === 'ilst') {
+          pOffset += 4;
+          pSize -= 4;
+        }
+      }
+
+      const mChildren = parseBoxTree(buf, pOffset, pSize);
+      const keysBox = mChildren.find(b => b.type === 'keys');
+      const keysMap = {};
+      if (keysBox && keysBox.payloadSize >= 8) {
+        const keyCount = view.getUint32(keysBox.payloadOffset + 4, false);
+        let kOff = keysBox.payloadOffset + 8;
+        const kEnd = keysBox.payloadOffset + keysBox.payloadSize;
+        for (let k = 1; k <= keyCount && kOff + 8 <= kEnd; k++) {
+          const kSize = view.getUint32(kOff, false);
+          if (kSize < 8 || kOff + kSize > kEnd) break;
+          const kName = readASCII(view, kOff + 8, kSize - 8);
+          keysMap[k] = kName;
+          kOff += kSize;
+        }
+      }
+
+      const ilstBox = mChildren.find(b => b.type === 'ilst');
+      if (ilstBox) {
+        const itemBoxes = parseBoxTree(buf, ilstBox.payloadOffset, ilstBox.payloadSize);
+        for (const item of itemBoxes) {
+          const dataBoxes = parseBoxTree(buf, item.payloadOffset, item.payloadSize);
+          const dataBox = dataBoxes.find(b => b.type === 'data');
+          if (dataBox && dataBox.payloadSize > 8) {
+            const valOffset = dataBox.payloadOffset + 8;
+            const valLen = dataBox.payloadSize - 8;
+            const val = readASCII(view, valOffset, valLen);
+
+            switch (item.type) {
+              case '©nam': result.tags.title = val; break;
+              case '©ART': result.tags.artist = val; break;
+              case '©alb': result.tags.album = val; break;
+              case '©day': result.tags.year = val; break;
+              case '©cmt': result.tags.comment = val; break;
+              case '©des':
+              case 'desc': result.tags.comment = result.tags.comment || val; break;
+              case 'cprt': result.tags.copyright = val; break;
+              case '©mak':
+              case 'make': result.tags.make = val; break;
+              case '©mod':
+              case 'model': result.tags.model = val; break;
+              case '©swr':
+              case 'soft': result.tags.software = val; break;
+            }
+
+            const rawCode = (item.type.charCodeAt(0) << 24) | (item.type.charCodeAt(1) << 16) | (item.type.charCodeAt(2) << 8) | item.type.charCodeAt(3);
+            const keyName = keysMap[rawCode];
+            if (keyName) {
+              if (keyName === 'com.apple.quicktime.make') result.tags.make = val;
+              else if (keyName === 'com.apple.quicktime.model') result.tags.model = val;
+              else if (keyName === 'com.apple.quicktime.software') result.tags.software = val;
+              else if (keyName === 'com.apple.quicktime.camera.lens_model') result.tags.lensModel = val;
+              else if (keyName === 'com.apple.quicktime.camera.focal_length.35mm_equivalent') result.tags.focalLength35mm = val;
+              else if (keyName === 'com.apple.quicktime.camera.iris_f_number') result.tags.fNumber = val;
+              else if (keyName === 'com.apple.quicktime.location.accuracy.horizontal') result.tags.horizontalAccuracy = val;
+              else if (keyName === 'com.apple.quicktime.location.ISO6709') {
+                if (!result.locationRaw) {
+                  result.locationRaw = val;
+                  if (typeof GeoUtils !== 'undefined') result.location = GeoUtils.parseISO6709(val);
+                }
+              } else if (keyName === 'com.apple.quicktime.creationdate' && !result.creationDate) {
+                const d = new Date(val);
+                if (!isNaN(d.getTime())) result.creationDate = d;
+              }
+            }
+          }
+        }
+      }
+    }
 
     // 1. Check 'mvhd' (Movie Header)
     const mvhdBox = children.find(b => b.type === 'mvhd');
@@ -248,7 +344,7 @@ const MP4Editor = (function () {
       result.duration = tScale ? (dur / tScale) : 0;
     }
 
-    // 2. Check 'trak' boxes for video dimensions and rotation
+    // 2. Check 'trak' boxes for video dimensions, rotation, and stream properties
     const trakBoxes = children.filter(b => b.type === 'trak');
     for (const trak of trakBoxes) {
       const trakChildren = parseBoxTree(moovBuffer, trak.payloadOffset, trak.payloadSize);
@@ -274,6 +370,7 @@ const MP4Editor = (function () {
 
         // Check if track is a video track via mdia -> hdlr
         let isVideo = (rawW > 0 && rawH > 0);
+        let trackTimescale = 0;
         const mdia = trakChildren.find(b => b.type === 'mdia');
         if (mdia) {
           const mdiaChildren = parseBoxTree(moovBuffer, mdia.payloadOffset, mdia.payloadSize);
@@ -283,6 +380,77 @@ const MP4Editor = (function () {
             if (hType === 'vide') isVideo = true;
             else if (hType === 'soun' || hType === 'hint' || hType === 'meta') isVideo = false;
           }
+
+          const mdhd = mdiaChildren.find(b => b.type === 'mdhd');
+          if (mdhd) {
+            const mv = view.getUint8(mdhd.payloadOffset);
+            trackTimescale = view.getUint32(mdhd.payloadOffset + (mv === 1 ? 20 : 12), false);
+          }
+
+          // Sample Table (stbl) for codecs and frame rate
+          const minf = mdiaChildren.find(b => b.type === 'minf');
+          if (minf) {
+            const minfChildren = parseBoxTree(moovBuffer, minf.payloadOffset, minf.payloadSize);
+            const stbl = minfChildren.find(b => b.type === 'stbl');
+            if (stbl) {
+              const stblChildren = parseBoxTree(moovBuffer, stbl.payloadOffset, stbl.payloadSize);
+
+              // stts for video frame rate
+              const stts = stblChildren.find(b => b.type === 'stts');
+              if (stts && isVideo && trackTimescale > 0) {
+                const entryCount = view.getUint32(stts.payloadOffset + 4, false);
+                if (entryCount > 0) {
+                  const sampleDelta = view.getUint32(stts.payloadOffset + 12, false);
+                  if (sampleDelta > 0) {
+                    const fps = trackTimescale / sampleDelta;
+                    if (fps > 0 && fps < 1000) {
+                      result.stream.frameRate = Math.round(fps * 100) / 100;
+                    }
+                  }
+                }
+              }
+
+              // stsd for stream codec & compressor properties
+              const stsd = stblChildren.find(b => b.type === 'stsd');
+              if (stsd && stsd.payloadSize > 8) {
+                const entryCount = view.getUint32(stsd.payloadOffset + 4, false);
+                if (entryCount > 0) {
+                  const entryOffset = stsd.payloadOffset + 8;
+                  const entryType = readASCII(view, entryOffset + 4, 4);
+
+                  if (isVideo) {
+                    result.stream.videoCodec = entryType;
+                    if (entryOffset + 51 < stsd.payloadOffset + stsd.payloadSize) {
+                      const nameLen = view.getUint8(entryOffset + 50);
+                      if (nameLen > 0 && nameLen <= 31) {
+                        result.stream.compressorName = readASCII(view, entryOffset + 51, nameLen);
+                      }
+                    }
+                    if (!result.stream.compressorName) {
+                      if (entryType === 'hvc1' || entryType === 'hev1') result.stream.compressorName = 'HEVC';
+                      else if (entryType === 'avc1') result.stream.compressorName = 'H.264 / AVC';
+                      else if (entryType.startsWith('ap')) result.stream.compressorName = 'Apple ProRes';
+                      else result.stream.compressorName = entryType.toUpperCase();
+                    }
+                    if (entryOffset + 84 <= stsd.payloadOffset + stsd.payloadSize) {
+                      const depth = view.getUint16(entryOffset + 82, false);
+                      result.stream.bitDepth = depth || 24;
+                    }
+                  } else {
+                    result.stream.audioFormat = entryType;
+                    if (entryOffset + 36 <= stsd.payloadOffset + stsd.payloadSize) {
+                      const channels = view.getUint16(entryOffset + 24, false);
+                      const sampleBits = view.getUint16(entryOffset + 26, false);
+                      const sRateFixed = view.getUint32(entryOffset + 32, false);
+                      if (channels > 0) result.stream.audioChannels = channels;
+                      if (sampleBits > 0) result.stream.audioBitsPerSample = sampleBits;
+                      if (sRateFixed > 0) result.stream.audioSampleRate = (sRateFixed >> 16);
+                    }
+                  }
+                }
+              }
+            }
+          }
         }
 
         if (isVideo && result.width === 0 && rawW > 0 && rawH > 0) {
@@ -291,6 +459,7 @@ const MP4Editor = (function () {
           result.rawWidth = rawW;
           result.rawHeight = rawH;
           result.rotation = rot;
+          result.stream.cleanAperture = `${rawW}x${rawH}`;
         }
 
         result.tracks.push({
@@ -303,7 +472,13 @@ const MP4Editor = (function () {
       }
     }
 
-    // 3. Check 'udta' (User Data) for GPS and iTunes/QuickTime tags
+    // 3. Check top-level 'meta' boxes inside 'moov' (Apple QuickTime mdta format)
+    const topMetaBoxes = children.filter(b => b.type === 'meta');
+    for (const mb of topMetaBoxes) {
+      parseMetaBox(moovBuffer, mb);
+    }
+
+    // 4. Check 'udta' (User Data) for GPS and iTunes/QuickTime tags
     const udtaBox = children.find(b => b.type === 'udta');
     if (udtaBox) {
       const udtaChildren = parseBoxTree(moovBuffer, udtaBox.payloadOffset, udtaBox.payloadSize);
@@ -311,7 +486,6 @@ const MP4Editor = (function () {
       // Check '©xyz' for GPS coordinates
       const xyzBox = udtaChildren.find(b => b.type === '©xyz');
       if (xyzBox) {
-        // QuickTime format: 2-byte language code followed by ISO 6709 string
         const strOffset = xyzBox.payloadOffset + 2;
         const strLen = xyzBox.payloadSize - 2;
         if (strLen > 0) {
@@ -323,45 +497,10 @@ const MP4Editor = (function () {
         }
       }
 
-      // Check 'meta' -> 'ilst' for media and device tags
-      const metaBox = udtaChildren.find(b => b.type === 'meta');
-      if (metaBox) {
-        // meta box might have 4 bytes version/flags (FullBox) or standard box
-        const metaPayloadOffset = metaBox.payloadOffset + 4;
-        const metaPayloadSize = metaBox.payloadSize - 4;
-        const metaChildren = parseBoxTree(moovBuffer, metaPayloadOffset, metaPayloadSize);
-        const ilstBox = metaChildren.find(b => b.type === 'ilst');
-
-        if (ilstBox) {
-          const itemBoxes = parseBoxTree(moovBuffer, ilstBox.payloadOffset, ilstBox.payloadSize);
-          for (const item of itemBoxes) {
-            const dataBoxes = parseBoxTree(moovBuffer, item.payloadOffset, item.payloadSize);
-            const dataBox = dataBoxes.find(b => b.type === 'data');
-            if (dataBox && dataBox.payloadSize > 8) {
-              // data box payload: 1 byte version, 3 bytes type flags, 4 bytes locale, then value
-              const valOffset = dataBox.payloadOffset + 8;
-              const valLen = dataBox.payloadSize - 8;
-              const val = readASCII(view, valOffset, valLen);
-
-              switch (item.type) {
-                case '©nam': result.tags.title = val; break;
-                case '©ART': result.tags.artist = val; break;
-                case '©alb': result.tags.album = val; break;
-                case '©day': result.tags.year = val; break;
-                case '©cmt': result.tags.comment = val; break;
-                case '©des':
-                case 'desc': result.tags.comment = result.tags.comment || val; break;
-                case 'cprt': result.tags.copyright = val; break;
-                case '©mak':
-                case 'make': result.tags.make = val; break;
-                case '©mod':
-                case 'model': result.tags.model = val; break;
-                case '©swr':
-                case 'soft': result.tags.software = val; break;
-              }
-            }
-          }
-        }
+      // Check 'meta' inside 'udta'
+      const udtaMetaBoxes = udtaChildren.filter(b => b.type === 'meta');
+      for (const mb of udtaMetaBoxes) {
+        parseMetaBox(moovBuffer, mb);
       }
     }
 
@@ -496,6 +635,108 @@ const MP4Editor = (function () {
       off += p.length;
     }
     return createBox('udta', udtaPayload);
+  }
+
+  /**
+   * Helper: Builds Apple QuickTime 'meta' box (keys + ilst) for professional optics & camera metadata.
+   * Recognized by ExifTool, metadata2go, Apple Photos, and Final Cut Pro.
+   */
+  function buildQuickTimeMetaBox(tags, locationString, cDateISO) {
+    const keyDefinitions = [
+      { name: 'com.apple.quicktime.make', val: tags.make },
+      { name: 'com.apple.quicktime.model', val: tags.model },
+      { name: 'com.apple.quicktime.software', val: tags.software },
+      { name: 'com.apple.quicktime.creationdate', val: cDateISO },
+      { name: 'com.apple.quicktime.location.ISO6709', val: locationString },
+      { name: 'com.apple.quicktime.location.accuracy.horizontal', val: tags.horizontalAccuracy },
+      { name: 'com.apple.quicktime.camera.lens_model', val: tags.lensModel },
+      { name: 'com.apple.quicktime.camera.focal_length.35mm_equivalent', val: tags.focalLength35mm },
+      { name: 'com.apple.quicktime.camera.iris_f_number', val: tags.fNumber }
+    ].filter(item => item.val && String(item.val).trim().length > 0);
+
+    if (keyDefinitions.length === 0) return null;
+
+    // 1. Build 'keys' box
+    let keysPayloadSize = 8; // 4 bytes version/flags + 4 bytes entry count
+    for (const item of keyDefinitions) {
+      const keyBytes = encodeUTF8(item.name);
+      keysPayloadSize += 8 + keyBytes.length; // 4 bytes size + 4 bytes 'mdta' + keyBytes
+    }
+    const keysBox = new Uint8Array(8 + keysPayloadSize);
+    const keysView = new DataView(keysBox.buffer);
+    writeUint32(keysView, 0, keysBox.length);
+    writeASCII(keysView, 4, 'keys');
+    writeUint32(keysView, 8, 0); // version & flags
+    writeUint32(keysView, 12, keyDefinitions.length); // count
+    let keyOffset = 16;
+    for (const item of keyDefinitions) {
+      const keyBytes = encodeUTF8(item.name);
+      const entrySize = 8 + keyBytes.length;
+      writeUint32(keysView, keyOffset, entrySize);
+      writeASCII(keysView, keyOffset + 4, 'mdta');
+      keysBox.set(keyBytes, keyOffset + 8);
+      keyOffset += entrySize;
+    }
+
+    // 2. Build 'ilst' box
+    const ilstItems = [];
+    for (let i = 0; i < keyDefinitions.length; i++) {
+      const valStr = String(keyDefinitions[i].val).trim();
+      const valBytes = encodeUTF8(valStr);
+      // Data box inside item: size (4), 'data' (4), type 1 (4), locale 0 (4), valBytes
+      const dataSize = 16 + valBytes.length;
+      const dataBox = new Uint8Array(dataSize);
+      const dv = new DataView(dataBox.buffer);
+      writeUint32(dv, 0, dataSize);
+      writeASCII(dv, 4, 'data');
+      dv.setUint8(8, 0); // version
+      dv.setUint8(9, 0);
+      dv.setUint8(10, 0);
+      dv.setUint8(11, 1); // type 1: UTF-8 text
+      writeUint32(dv, 12, 0); // locale
+      dataBox.set(valBytes, 16);
+
+      // Item box: size (4), tag (4 bytes 1-based index: i + 1), dataBox
+      const itemSize = 8 + dataSize;
+      const itemBox = new Uint8Array(itemSize);
+      const idv = new DataView(itemBox.buffer);
+      writeUint32(idv, 0, itemSize);
+      writeUint32(idv, 4, i + 1); // 1-based index corresponding to keys
+      itemBox.set(dataBox, 8);
+      ilstItems.push(itemBox);
+    }
+
+    const ilstTotalSize = ilstItems.reduce((acc, b) => acc + b.length, 0);
+    const ilstBox = new Uint8Array(8 + ilstTotalSize);
+    const ilstView = new DataView(ilstBox.buffer);
+    writeUint32(ilstView, 0, ilstBox.length);
+    writeASCII(ilstView, 4, 'ilst');
+    let ilstOff = 8;
+    for (const b of ilstItems) {
+      ilstBox.set(b, ilstOff);
+      ilstOff += b.length;
+    }
+
+    // 3. Build 'hdlr' box with handler 'mdta'
+    const hdlrPayload = new Uint8Array(25);
+    const hdlrView = new DataView(hdlrPayload.buffer);
+    writeUint32(hdlrView, 0, 0);
+    writeUint32(hdlrView, 4, 0);
+    writeASCII(hdlrView, 8, 'mdta');
+    writeASCII(hdlrView, 12, 'appl');
+    writeUint32(hdlrView, 16, 0);
+    writeUint32(hdlrView, 20, 0);
+    hdlrPayload[24] = 0;
+    const hdlrBox = createBox('hdlr', hdlrPayload);
+
+    // 4. Build 'meta' box (FullBox: 4 bytes version/flags = 0)
+    const metaPayload = new Uint8Array(4 + hdlrBox.length + keysBox.length + ilstBox.length);
+    let metaOff = 4;
+    metaPayload.set(hdlrBox, metaOff); metaOff += hdlrBox.length;
+    metaPayload.set(keysBox, metaOff); metaOff += keysBox.length;
+    metaPayload.set(ilstBox, metaOff); metaOff += ilstBox.length;
+
+    return createBox('meta', metaPayload);
   }
 
   /**
@@ -747,11 +988,11 @@ const MP4Editor = (function () {
       const view = new DataView(moovBuffer);
       const children = parseBoxTree(moovBuffer, 8, moovBox.size - 8);
 
-      // 2. Separate existing non-udta children from udta
-      const nonUdtaChildren = children.filter(b => b.type !== 'udta');
+      // 2. Separate existing non-udta and non-meta children from udta/meta
+      const nonUdtaChildren = children.filter(b => b.type !== 'udta' && b.type !== 'meta');
       const existingUdta = children.find(b => b.type === 'udta');
 
-      // 3. Build new udta box
+      // 3. Build new udta and QuickTime meta boxes
       let locationString = '';
       if (!updates.scrubAll && updates.location) {
         if (typeof GeoUtils !== 'undefined') {
@@ -764,7 +1005,9 @@ const MP4Editor = (function () {
       }
 
       const tags = updates.scrubAll ? {} : (updates.tags || {});
+      const cDateISO = (!updates.scrubAll && updates.creationDate) ? new Date(updates.creationDate).toISOString() : '';
       const newUdta = buildUdtaBox(tags, locationString);
+      const newMoovMeta = updates.scrubAll ? null : buildQuickTimeMetaBox(tags, locationString, cDateISO);
 
       // 4. Calculate new moov size and construct new moov payload
       let nonUdtaTotalSize = 0;
@@ -772,7 +1015,8 @@ const MP4Editor = (function () {
         nonUdtaTotalSize += c.size;
       }
       const newUdtaSize = newUdta ? newUdta.length : 0;
-      const newMoovSize = 8 + nonUdtaTotalSize + newUdtaSize;
+      const newMoovMetaSize = newMoovMeta ? newMoovMeta.length : 0;
+      const newMoovSize = 8 + nonUdtaTotalSize + newMoovMetaSize + newUdtaSize;
 
       const newMoov = new Uint8Array(newMoovSize);
       const newMoovView = new DataView(newMoov.buffer);
@@ -785,6 +1029,12 @@ const MP4Editor = (function () {
         const chunk = new Uint8Array(moovBuffer, c.offset, c.size);
         newMoov.set(chunk, copyOffset);
         copyOffset += c.size;
+      }
+
+      // Append new QuickTime meta box (keys + ilst)
+      if (newMoovMeta) {
+        newMoov.set(newMoovMeta, copyOffset);
+        copyOffset += newMoovMeta.length;
       }
 
       // Append new udta
