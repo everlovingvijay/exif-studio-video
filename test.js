@@ -250,6 +250,42 @@ async function runAsyncTests() {
   const metaRot270 = MP4Editor.extractMoovMetadata(blobRot270.parts[1].buffer, { type: 'moov', offset: 0, size: blobRot270.parts[1].length, headerSize: 8 });
   assert(metaRot270.rotation === 270, 'Rotated export: Rotation correctly set to 270');
   assert(metaRot270.width === 1080 && metaRot270.height === 1920, '270° display dimensions are 1080x1920');
+
+  // Test 3D: Export with iPhone 17 preset (matching user PDF metadata report)
+  const iphone17Updates = {
+    tags: {
+      make: 'Apple',
+      model: 'iPhone 17',
+      software: '26.6.2',
+      lensModel: 'iPhone 17 back camera 5.96mm f/1.6',
+      focalLength35mm: '26',
+      fNumber: 'F1.60',
+      horizontalAccuracy: '10.84'
+    },
+    location: {
+      latitude: 17.5327,
+      longitude: 78.3922,
+      altitude: 611.743
+    },
+    creationDate: new Date('2026-09-27T09:34:10Z')
+  };
+  const blobIphone17 = await MP4Editor.writeMetadata(syntheticFile, scanResult, iphone17Updates);
+  const metaIphone17 = MP4Editor.extractMoovMetadata(blobIphone17.parts[1].buffer, {
+    type: 'moov',
+    offset: 0,
+    size: blobIphone17.parts[1].length,
+    headerSize: 8
+  });
+  assert(metaIphone17.tags.make === 'Apple', 'iPhone 17 make is Apple');
+  assert(metaIphone17.tags.model === 'iPhone 17', 'iPhone 17 model is iPhone 17');
+  assert(metaIphone17.tags.software === '26.6.2', 'iPhone 17 software is 26.6.2');
+  assert(metaIphone17.tags.lensModel === 'iPhone 17 back camera 5.96mm f/1.6', 'iPhone 17 lens model parsed');
+  assert(metaIphone17.tags.focalLength35mm === '26', 'iPhone 17 focal length 35mm parsed as 26');
+  assert(metaIphone17.tags.fNumber === 'F1.60', 'iPhone 17 F-number parsed as F1.60');
+  assert(metaIphone17.tags.horizontalAccuracy === '10.84', 'iPhone 17 horizontal accuracy parsed as 10.84');
+  assert(metaIphone17.location !== null, 'iPhone 17 location parsed');
+  assert(Math.abs(metaIphone17.location.latitude - 17.5327) < 0.001, 'iPhone 17 latitude match');
+  print('  ✓ iPhone 17 camera & lens optics roundtrip verified successfully!');
 }
 
 load('js/c2pa-engine.js');
