@@ -40,6 +40,7 @@ document.addEventListener('DOMContentLoaded', () => {
   const latInput = document.getElementById('latInput');
   const lonInput = document.getElementById('lonInput');
   const altInput = document.getElementById('altInput');
+  const horizontalAccuracyInput = document.getElementById('horizontalAccuracyInput');
   const dmsCoords = document.getElementById('dmsCoords');
   const getCurrentLocBtn = document.getElementById('getCurrentLocBtn');
   const clearLocBtn = document.getElementById('clearLocBtn');
@@ -48,7 +49,20 @@ document.addEventListener('DOMContentLoaded', () => {
   const makeInput = document.getElementById('makeInput');
   const modelInput = document.getElementById('modelInput');
   const softwareInput = document.getElementById('softwareInput');
+  const lensModelInput = document.getElementById('lensModelInput');
+  const focalLengthInput = document.getElementById('focalLengthInput');
+  const fNumberInput = document.getElementById('fNumberInput');
   const devicePresetSelect = document.getElementById('devicePresetSelect');
+
+  // Stream & Media Inspector specs
+  const specCodec = document.getElementById('specCodec');
+  const specBitDepth = document.getElementById('specBitDepth');
+  const specFps = document.getElementById('specFps');
+  const specBitrate = document.getElementById('specBitrate');
+  const specAudioCodec = document.getElementById('specAudioCodec');
+  const specAudioChannels = document.getElementById('specAudioChannels');
+  const specAudioSampleRate = document.getElementById('specAudioSampleRate');
+  const specCleanAperture = document.getElementById('specCleanAperture');
 
   // Media Tags inputs
   const titleInput = document.getElementById('titleInput');
@@ -323,11 +337,13 @@ document.addEventListener('DOMContentLoaded', () => {
       latInput.value = meta.location.latitude;
       lonInput.value = meta.location.longitude;
       altInput.value = meta.location.altitude !== null ? meta.location.altitude : '';
+      horizontalAccuracyInput.value = meta.tags.horizontalAccuracy || '';
       initMap(meta.location.latitude, meta.location.longitude, 13, true);
     } else {
       latInput.value = '';
       lonInput.value = '';
       altInput.value = '';
+      horizontalAccuracyInput.value = meta.tags.horizontalAccuracy || '';
       initMap(20, 0, 2, false);
     }
     updateDMSDisplay();
@@ -335,12 +351,30 @@ document.addEventListener('DOMContentLoaded', () => {
     makeInput.value = meta.tags.make || '';
     modelInput.value = meta.tags.model || '';
     softwareInput.value = meta.tags.software || '';
+    lensModelInput.value = meta.tags.lensModel || '';
+    focalLengthInput.value = meta.tags.focalLength35mm || '';
+    fNumberInput.value = meta.tags.fNumber || '';
 
     titleInput.value = meta.tags.title || '';
     artistInput.value = meta.tags.artist || '';
     albumInput.value = meta.tags.album || '';
     commentInput.value = meta.tags.comment || '';
     copyrightInput.value = meta.tags.copyright || '';
+
+    // Populate Stream & Media Inspector specs
+    if (meta.stream) {
+      if (specCodec) specCodec.textContent = `${meta.stream.compressorName || 'Unknown'} (${meta.stream.videoCodec || 'hvc1'})`;
+      if (specBitDepth) specBitDepth.textContent = `${meta.stream.bitDepth || 24}-bit`;
+      if (specFps) specFps.textContent = `${meta.stream.frameRate || 30} fps`;
+      if (specCleanAperture) specCleanAperture.textContent = meta.stream.cleanAperture || `${meta.width}x${meta.height}`;
+      if (specBitrate && currentFile && meta.duration > 0) {
+        const mbps = ((currentFile.size * 8) / (meta.duration * 1e6)).toFixed(2);
+        specBitrate.textContent = `${mbps} Mbps`;
+      }
+      if (specAudioCodec) specAudioCodec.textContent = meta.stream.audioFormat ? meta.stream.audioFormat.toUpperCase() : 'mp4a / AAC';
+      if (specAudioChannels) specAudioChannels.textContent = meta.stream.audioChannels ? `${meta.stream.audioChannels} ch` : 'Stereo (2)';
+      if (specAudioSampleRate) specAudioSampleRate.textContent = meta.stream.audioSampleRate ? `${meta.stream.audioSampleRate.toLocaleString()} Hz` : '48,000 Hz';
+    }
 
     // C2PA Handling
     activeC2PA = meta.c2pa;
@@ -537,20 +571,103 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // Device Presets
   const DEVICE_PRESETS = {
-    'iphone15pro': { make: 'Apple', model: 'iPhone 15 Pro', software: 'iOS 17.5.1' },
-    'sonya7s3': { make: 'Sony', model: 'ILCE-7SM3 (A7S III)', software: 'Ver.3.00' },
-    'gopro12': { make: 'GoPro', model: 'HERO12 Black', software: 'HD12.01.01.20' },
-    'djimini4': { make: 'DJI', model: 'Mini 4 Pro', software: 'v01.00.0300' },
-    'pixel8': { make: 'Google', model: 'Pixel 8 Pro', software: 'Android 14' }
+    'iphone17': {
+      make: 'Apple',
+      model: 'iPhone 17',
+      software: '26.6.2',
+      lensModel: 'iPhone 17 back camera 5.96mm f/1.6',
+      focalLength35mm: '26',
+      fNumber: 'F1.60',
+      horizontalAccuracy: '10.84'
+    },
+    'iphone16promax': {
+      make: 'Apple',
+      model: 'iPhone 16 Pro Max',
+      software: '18.1',
+      lensModel: 'iPhone 16 Pro Max back camera 6.765mm f/1.78',
+      focalLength35mm: '24',
+      fNumber: 'F1.78',
+      horizontalAccuracy: '5.00'
+    },
+    'iphone15pro': {
+      make: 'Apple',
+      model: 'iPhone 15 Pro',
+      software: 'iOS 17.5.1',
+      lensModel: 'iPhone 15 Pro back camera 6.765mm f/1.78',
+      focalLength35mm: '24',
+      fNumber: 'F1.78',
+      horizontalAccuracy: '5.00'
+    },
+    's24ultra': {
+      make: 'Samsung',
+      model: 'Galaxy S24 Ultra',
+      software: 'S928BXXU1AXCA',
+      lensModel: 'Galaxy S24 Ultra 200MP Wide Lens 6.3mm f/1.7',
+      focalLength35mm: '23',
+      fNumber: 'F1.70',
+      horizontalAccuracy: '4.50'
+    },
+    'pixel9pro': {
+      make: 'Google',
+      model: 'Pixel 9 Pro',
+      software: 'Android 15 (AP3A.240905.015)',
+      lensModel: 'Pixel 9 Pro back camera 6.9mm f/1.68',
+      focalLength35mm: '25',
+      fNumber: 'F1.68',
+      horizontalAccuracy: '4.00'
+    },
+    'sonya7s3': {
+      make: 'Sony',
+      model: 'ILCE-7SM3 (Alpha 7S III)',
+      software: 'Ver.3.00',
+      lensModel: 'FE 24-70mm F2.8 GM II',
+      focalLength35mm: '35',
+      fNumber: 'F2.80',
+      horizontalAccuracy: '1.50'
+    },
+    'canonr5': {
+      make: 'Canon',
+      model: 'Canon EOS R5',
+      software: 'Firmware 2.0.0',
+      lensModel: 'RF24-70mm F2.8 L IS USM',
+      focalLength35mm: '50',
+      fNumber: 'F2.80',
+      horizontalAccuracy: '1.50'
+    },
+    'djimini4': {
+      make: 'DJI',
+      model: 'Mini 4 Pro',
+      software: 'v01.00.0300',
+      lensModel: 'DJI FC3582 24mm f/1.7',
+      focalLength35mm: '24',
+      fNumber: 'F1.70',
+      horizontalAccuracy: '0.80'
+    },
+    'gopro12': {
+      make: 'GoPro',
+      model: 'HERO12 Black',
+      software: 'HD12.01.01.20',
+      lensModel: 'GoPro Max Lens Mod 2.0 12mm f/2.5',
+      focalLength35mm: '12',
+      fNumber: 'F2.50',
+      horizontalAccuracy: '3.00'
+    }
   };
 
   devicePresetSelect.addEventListener('change', (e) => {
     const val = e.target.value;
     if (DEVICE_PRESETS[val]) {
-      makeInput.value = DEVICE_PRESETS[val].make;
-      modelInput.value = DEVICE_PRESETS[val].model;
-      softwareInput.value = DEVICE_PRESETS[val].software;
-      showToast(`Applied preset: ${DEVICE_PRESETS[val].model}`, 'info');
+      const preset = DEVICE_PRESETS[val];
+      makeInput.value = preset.make;
+      modelInput.value = preset.model;
+      softwareInput.value = preset.software;
+      lensModelInput.value = preset.lensModel || '';
+      focalLengthInput.value = preset.focalLength35mm || '';
+      fNumberInput.value = preset.fNumber || '';
+      if (preset.horizontalAccuracy && !horizontalAccuracyInput.value) {
+        horizontalAccuracyInput.value = preset.horizontalAccuracy;
+      }
+      showToast(`Applied preset: ${preset.model}`, 'info');
     }
   });
 
@@ -596,6 +713,10 @@ document.addEventListener('DOMContentLoaded', () => {
       makeInput.value = '';
       modelInput.value = '';
       softwareInput.value = '';
+      lensModelInput.value = '';
+      focalLengthInput.value = '';
+      fNumberInput.value = '';
+      horizontalAccuracyInput.value = '';
 
       artistInput.value = '';
       commentInput.value = '';
@@ -653,7 +774,11 @@ document.addEventListener('DOMContentLoaded', () => {
         copyright: copyrightInput.value.trim(),
         make: makeInput.value.trim(),
         model: modelInput.value.trim(),
-        software: softwareInput.value.trim()
+        software: softwareInput.value.trim(),
+        lensModel: lensModelInput.value.trim(),
+        focalLength35mm: focalLengthInput.value.trim(),
+        fNumber: fNumberInput.value.trim(),
+        horizontalAccuracy: horizontalAccuracyInput.value.trim()
       };
 
       const updates = {
