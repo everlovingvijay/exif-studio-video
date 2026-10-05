@@ -368,8 +368,91 @@ async function runAsyncTests() {
   }
   assert(foundTrackMeta, 'Track-level meta box present in video track (trak.meta)');
 
+  // Verify ftyp box has 'qt  ' major brand
+  const ftypOut = blobIphone17.parts[0];
+  const ftypBrand = String.fromCharCode(ftypOut[8], ftypOut[9], ftypOut[10], ftypOut[11]);
+  assert(ftypBrand === 'qt  ', 'Apple/iPhone export enforces QuickTime qt brand in ftyp');
+
+  // Verify XMP_ atom is embedded in udta
+  let foundXMP = false;
+  let uo = 8;
+  while (uo + 8 <= blobIphone17.parts[1].length) {
+    const bSize = moovDv.getUint32(uo, false);
+    const bType = String.fromCharCode(moovDv.getUint8(uo+4), moovDv.getUint8(uo+5), moovDv.getUint8(uo+6), moovDv.getUint8(uo+7));
+    if (bType === 'udta') {
+      let insideUdta = uo + 8;
+      while (insideUdta + 8 <= uo + bSize) {
+        const uSubSz = moovDv.getUint32(insideUdta, false);
+        const uSubTp = String.fromCharCode(moovDv.getUint8(insideUdta+4), moovDv.getUint8(insideUdta+5), moovDv.getUint8(insideUdta+6), moovDv.getUint8(insideUdta+7));
+        if (uSubTp === 'XMP_') {
+          foundXMP = true;
+          let xmpStr = '';
+          for (let xi = insideUdta + 8; xi < insideUdta + uSubSz; xi++) {
+            xmpStr += String.fromCharCode(moovDv.getUint8(xi));
+          }
+          assert(xmpStr.includes('exif:LensModel="iPhone 17 back camera 5.96mm f/1.6"'), 'XMP contains correct exif:LensModel');
+          assert(xmpStr.includes('exif:FocalLengthIn35mmFilm="26"'), 'XMP contains correct exif:FocalLengthIn35mmFilm');
+          assert(xmpStr.includes('exif:FNumber="1.6"'), 'XMP contains correct exif:FNumber');
+          break;
+        }
+        if (uSubSz < 8) break;
+        insideUdta += uSubSz;
+      }
+      break;
+    }
+    if (bSize < 8) break;
+    uo += bSize;
+  }
+  assert(foundXMP, 'XMP_ atom embedded in udta with standard RDF lens & camera metadata');
+
+  // Verify dual keys in trak.meta
+  let foundShortLensKey = false;
+  let foundCaptureMode = false;
+  let tmo = 8;
+  while (tmo + 8 <= blobIphone17.parts[1].length) {
+    const bSize = moovDv.getUint32(tmo, false);
+    const bType = String.fromCharCode(moovDv.getUint8(tmo+4), moovDv.getUint8(tmo+5), moovDv.getUint8(tmo+6), moovDv.getUint8(tmo+7));
+    if (bType === 'trak') {
+      let inT = tmo + 8;
+      while (inT + 8 <= tmo + bSize) {
+        const sSz = moovDv.getUint32(inT, false);
+        const sTp = String.fromCharCode(moovDv.getUint8(inT+4), moovDv.getUint8(inT+5), moovDv.getUint8(inT+6), moovDv.getUint8(inT+7));
+        if (sTp === 'meta') {
+          let inM = inT + 8;
+          while (inM + 8 <= inT + sSz) {
+            const mSz = moovDv.getUint32(inM, false);
+            const mTp = String.fromCharCode(moovDv.getUint8(inM+4), moovDv.getUint8(inM+5), moovDv.getUint8(inM+6), moovDv.getUint8(inM+7));
+            if (mTp === 'keys') {
+              const kCount = moovDv.getUint32(inM + 12, false);
+              let ko = inM + 16;
+              for (let k = 1; k <= kCount; k++) {
+                const ksz = moovDv.getUint32(ko, false);
+                let kname = '';
+                for (let ki = ko + 8; ki < ko + ksz; ki++) kname += String.fromCharCode(moovDv.getUint8(ki));
+                if (kname === 'camera.lens_model') foundShortLensKey = true;
+                if (kname === 'com.apple.photos.captureMode') foundCaptureMode = true;
+                ko += ksz;
+              }
+              break;
+            }
+            if (mSz < 8) break;
+            inM += mSz;
+          }
+          break;
+        }
+        if (sSz < 8) break;
+        inT += sSz;
+      }
+      break;
+    }
+    if (bSize < 8) break;
+    tmo += bSize;
+  }
+  assert(foundShortLensKey, 'Dual-namespace camera.lens_model present in trak.meta for Apple Photos compatibility');
+  assert(foundCaptureMode, 'com.apple.photos.captureMode present in trak.meta');
+
   print('  ✓ QuickTime binary layout strictly conforms to Apple AVFoundation specification!');
-  print('  ✓ iPhone 17 camera & lens optics (track + movie) and Dolby Vision roundtrip verified successfully!');
+  print('  ✓ iPhone 17 camera & lens optics (track + movie + XMP + ftyp) verified successfully!');
 }
 
 load('js/c2pa-engine.js');
