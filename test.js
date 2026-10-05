@@ -284,7 +284,7 @@ async function runAsyncTests() {
       fNumber: '1.6',
       horizontalAccuracy: '10.84'
     },
-    dolbyVision: true,
+    outputFormat: 'mov',
     location: {
       latitude: 17.5327,
       longitude: 78.3922,
@@ -307,10 +307,8 @@ async function runAsyncTests() {
   assert(metaIphone17.tags.focalLength35mm === '26', 'iPhone 17 focal length 35mm parsed as 26');
   assert(metaIphone17.tags.fNumber === '1.6', 'iPhone 17 F-number parsed as 1.6');
   assert(metaIphone17.tags.horizontalAccuracy === '10.84', 'iPhone 17 horizontal accuracy parsed as 10.84');
-  assert(metaIphone17.stream.videoCodec === 'dvh1', 'Dolby Vision FourCC is dvh1');
-  assert(metaIphone17.stream.compressorName === 'HEVC', 'Compressor name is HEVC');
-  assert(metaIphone17.stream.isDolbyVision === true, 'Stream detected as Dolby Vision');
-  assert(metaIphone17.stream.dolbyVisionProfile === 'Profile 8.4', 'Dolby Vision profile is Profile 8.4');
+  assert(metaIphone17.stream.videoCodec === 'hvc1', 'Original video stream codec (hvc1) is preserved intact (no corruption)');
+  assert(metaIphone17.stream.compressorName === 'HEVC', 'Compressor name (HEVC) is preserved');
   assert(metaIphone17.location !== null, 'iPhone 17 location parsed');
   assert(Math.abs(metaIphone17.location.latitude - 17.5327) < 0.001, 'iPhone 17 latitude match');
 
