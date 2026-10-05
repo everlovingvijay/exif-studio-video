@@ -1378,12 +1378,6 @@ if (typeof module !== 'undefined' && module.exports) {
  * Slices file headers so multi-gigabyte videos never exhaust browser RAM.
  */
 
-/**
- * MP4 / MOV Binary Box Parser and Lossless Metadata Editor
- * Runs 100% client-side in the browser.
- * Slices file headers so multi-gigabyte videos never exhaust browser RAM.
- */
-
 const MP4Editor = (function () {
   // Mac/QuickTime epoch offset (Jan 1, 1904 to Jan 1, 1970 UTC in seconds)
   const MAC_EPOCH_OFFSET = 2082844800;
@@ -2324,14 +2318,10 @@ const MP4Editor = (function () {
 
   /**
    * Updates a video track (trak) box:
-   * 1. Injects/updates track-level 'meta' box (AVFoundation videoTrack.metadata for lens & optics)
-   * 2. If dolbyVision is true, signals Apple Dolby Vision Profile 8.4:
-   *    - FourCC set to 'dvh1'
-   *    - Compressor name set to 'HEVC'
-   *    - Sub-boxes updated with 'colr' (BT.2020 HLG, 19 bytes) and 'dvvC' (Profile 8.4, 24 bytes)
-   *    - Recalculates sizes for stsd, stbl, minf, mdia, trak.
+   * Injects/updates track-level 'meta' box (AVFoundation videoTrack.metadata for lens & optics).
+   * Leaves media stream sample descriptions (stsd) 100% untouched to ensure video playback never fails.
    */
-  function updateVideoTrakBox(trakBytes, tags, dolbyVision, scrubAll) {
+  function updateVideoTrakBox(trakBytes, tags, scrubAll) {
     const dv = new DataView(trakBytes.buffer, trakBytes.byteOffset, trakBytes.byteLength);
     const trakSize = dv.getUint32(0, false);
 
@@ -2385,185 +2375,10 @@ const MP4Editor = (function () {
     const nonMetaChildren = children.filter(c => c.type !== 'meta');
     const newTrakMeta = scrubAll ? null : buildTrackMetaBox(tags);
 
-    let updatedMdiaBytes = null;
-    if (dolbyVision && mdiaChild) {
-      const mdiaBytes = trakBytes.subarray(mdiaChild.offset, mdiaChild.offset + mdiaChild.size);
-      const mdiaDv = new DataView(mdiaBytes.buffer, mdiaBytes.byteOffset, mdiaBytes.byteLength);
-
-      const mChildren = [];
-      let mOff = 8;
-      while (mOff + 8 <= mdiaChild.size) {
-        const mSz = mdiaDv.getUint32(mOff, false);
-        const mTp = readASCII(mdiaDv, mOff + 4, 4);
-        mChildren.push({ type: mTp, offset: mOff, size: mSz });
-        if (mSz < 8) break;
-        mOff += mSz;
-      }
-
-      const minfChild = mChildren.find(c => c.type === 'minf');
-      if (minfChild) {
-        const minfBytes = mdiaBytes.subarray(minfChild.offset, minfChild.offset + minfChild.size);
-        const minfDv = new DataView(minfBytes.buffer, minfBytes.byteOffset, minfBytes.byteLength);
-
-        const miChildren = [];
-        let miOff = 8;
-        while (miOff + 8 <= minfChild.size) {
-          const miSz = minfDv.getUint32(miOff, false);
-          const miTp = readASCII(minfDv, miOff + 4, 4);
-          miChildren.push({ type: miTp, offset: miOff, size: miSz });
-          if (miSz < 8) break;
-          miOff += miSz;
-        }
-
-        const stblChild = miChildren.find(c => c.type === 'stbl');
-        if (stblChild) {
-          const stblBytes = minfBytes.subarray(stblChild.offset, minfChild.offset + minfChild.size);
-          const stblDv = new DataView(stblBytes.buffer, stblBytes.byteOffset, stblBytes.byteLength);
-
-          const sChildren = [];
-          let sOff = 8;
-          while (sOff + 8 <= stblChild.size) {
-            const sSz = stblDv.getUint32(sOff, false);
-            const sTp = readASCII(stblDv, sOff + 4, 4);
-            sChildren.push({ type: sTp, offset: sOff, size: sSz });
-            if (sSz < 8) break;
-            sOff += sSz;
-          }
-
-          const stsdChild = sChildren.find(c => c.type === 'stsd');
-          if (stsdChild && stsdChild.size >= 24) {
-            const stsdBytes = stblBytes.subarray(stsdChild.offset, stsdChild.offset + stsdChild.size);
-            const stsdDv = new DataView(stsdBytes.buffer, stsdBytes.byteOffset, stsdBytes.byteLength);
-
-            const entrySz = stsdDv.getUint32(16, false);
-            const entryBytes = stsdBytes.subarray(16, 16 + entrySz);
-
-            // Sub-boxes of VisualSampleEntry start at offset 86
-            const subBoxes = [];
-            let subOff = 86;
-            while (subOff + 8 <= entrySz) {
-              const sbSz = stsdDv.getUint32(16 + subOff, false);
-              const sbTp = readASCII(stsdDv, 16 + subOff + 4, 4);
-              if (sbSz < 8) break;
-              subBoxes.push({
-                type: sbTp,
-                offset: subOff,
-                size: sbSz,
-                bytes: entryBytes.subarray(subOff, subOff + sbSz)
-              });
-              subOff += sbSz;
-            }
-
-            const is4K = (trackWidth >= 3840 || trackHeight >= 2160);
-            const dvvCBox = buildDvvCBox(is4K);
-            const colrBox = buildColrBox();
-
-            // Filter out existing colr and dvvC / dvcC
-            const keptSubBoxes = subBoxes.filter(b => b.type !== 'colr' && b.type !== 'dvvC' && b.type !== 'dvcC');
-            let newSubTotal = dvvCBox.length + colrBox.length;
-            for (const sb of keptSubBoxes) newSubTotal += sb.size;
-
-            const newEntrySz = 86 + newSubTotal;
-            const newEntryBytes = new Uint8Array(newEntrySz);
-            newEntryBytes.set(entryBytes.subarray(0, 86));
-            const newEntryDv = new DataView(newEntryBytes.buffer);
-
-            // Set new entry size and FourCC: 'dvh1'
-            writeUint32(newEntryDv, 0, newEntrySz);
-            writeASCII(newEntryDv, 4, 'dvh1');
-
-            // Set compressor name to 'HEVC' (Pascal string: length 4 + 'HEVC' + 0s up to 32 bytes)
-            newEntryDv.setUint8(50, 4);
-            writeASCII(newEntryDv, 51, 'HEVC');
-            for (let j = 55; j < 82; j++) newEntryDv.setUint8(j, 0);
-
-            // Set bit depth to 24
-            newEntryDv.setUint16(82, 24, false);
-
-            let eCopyOff = 86;
-            for (const sb of keptSubBoxes) {
-              newEntryBytes.set(sb.bytes, eCopyOff);
-              eCopyOff += sb.size;
-            }
-            newEntryBytes.set(colrBox, eCopyOff); eCopyOff += colrBox.length;
-            newEntryBytes.set(dvvCBox, eCopyOff); eCopyOff += dvvCBox.length;
-
-            // Rebuild stsd
-            const newStsdSz = 16 + newEntrySz;
-            const newStsdBytes = new Uint8Array(newStsdSz);
-            newStsdBytes.set(stsdBytes.subarray(0, 16));
-            writeUint32(new DataView(newStsdBytes.buffer), 0, newStsdSz);
-            newStsdBytes.set(newEntryBytes, 16);
-
-            // Rebuild stbl
-            let newStblSz = 8 + newStsdSz;
-            for (const sc of sChildren) {
-              if (sc.type !== 'stsd') newStblSz += sc.size;
-            }
-            const newStblBytes = new Uint8Array(newStblSz);
-            writeUint32(new DataView(newStblBytes.buffer), 0, newStblSz);
-            writeASCII(new DataView(newStblBytes.buffer), 4, 'stbl');
-            let stblCopyOff = 8;
-            for (const sc of sChildren) {
-              if (sc.type === 'stsd') {
-                newStblBytes.set(newStsdBytes, stblCopyOff);
-                stblCopyOff += newStsdBytes.length;
-              } else {
-                newStblBytes.set(stblBytes.subarray(sc.offset, sc.offset + sc.size), stblCopyOff);
-                stblCopyOff += sc.size;
-              }
-            }
-
-            // Rebuild minf
-            let newMinfSz = 8 + newStblSz;
-            for (const mc of miChildren) {
-              if (mc.type !== 'stbl') newMinfSz += mc.size;
-            }
-            const newMinfBytes = new Uint8Array(newMinfSz);
-            writeUint32(new DataView(newMinfBytes.buffer), 0, newMinfSz);
-            writeASCII(new DataView(newMinfBytes.buffer), 4, 'minf');
-            let minfCopyOff = 8;
-            for (const mc of miChildren) {
-              if (mc.type === 'stbl') {
-                newMinfBytes.set(newStblBytes, minfCopyOff);
-                minfCopyOff += newStblBytes.length;
-              } else {
-                newMinfBytes.set(minfBytes.subarray(mc.offset, mc.offset + mc.size), minfCopyOff);
-                minfCopyOff += mc.size;
-              }
-            }
-
-            // Rebuild mdia
-            let newMdiaSz = 8 + newMinfSz;
-            for (const mc of mChildren) {
-              if (mc.type !== 'minf') newMdiaSz += mc.size;
-            }
-            updatedMdiaBytes = new Uint8Array(newMdiaSz);
-            writeUint32(new DataView(updatedMdiaBytes.buffer), 0, newMdiaSz);
-            writeASCII(new DataView(updatedMdiaBytes.buffer), 4, 'mdia');
-            let mdiaCopyOff = 8;
-            for (const mc of mChildren) {
-              if (mc.type === 'minf') {
-                updatedMdiaBytes.set(newMinfBytes, mdiaCopyOff);
-                mdiaCopyOff += newMinfBytes.length;
-              } else {
-                updatedMdiaBytes.set(mdiaBytes.subarray(mc.offset, mc.offset + mc.size), mdiaCopyOff);
-                mdiaCopyOff += mc.size;
-              }
-            }
-          }
-        }
-      }
-    }
-
-    // Assemble new trak box
+    // Assemble new trak box with all media stream boxes (mdia, stsd, etc.) 100% untouched
     let newTrakSz = 8;
     for (const c of nonMetaChildren) {
-      if (c.type === 'mdia' && updatedMdiaBytes) {
-        newTrakSz += updatedMdiaBytes.length;
-      } else {
-        newTrakSz += c.size;
-      }
+      newTrakSz += c.size;
     }
     if (newTrakMeta) newTrakSz += newTrakMeta.length;
 
@@ -2574,13 +2389,8 @@ const MP4Editor = (function () {
 
     let trakCopyOff = 8;
     for (const c of nonMetaChildren) {
-      if (c.type === 'mdia' && updatedMdiaBytes) {
-        newTrakBytes.set(updatedMdiaBytes, trakCopyOff);
-        trakCopyOff += updatedMdiaBytes.length;
-      } else {
-        newTrakBytes.set(trakBytes.subarray(c.offset, c.offset + c.size), trakCopyOff);
-        trakCopyOff += c.size;
-      }
+      newTrakBytes.set(trakBytes.subarray(c.offset, c.offset + c.size), trakCopyOff);
+      trakCopyOff += c.size;
     }
     if (newTrakMeta) {
       newTrakBytes.set(newTrakMeta, trakCopyOff);
@@ -2859,12 +2669,12 @@ const MP4Editor = (function () {
       const newUdta = buildUdtaBox(tags, locationString);
       const newMoovMeta = updates.scrubAll ? null : buildQuickTimeMetaBox(tags, locationString, cDateISO);
 
-      // 4. Process non-udta children (updating video track with track-level optics & Dolby Vision)
+      // 4. Process non-udta children (updating video track with track-level optics)
       const processedChildren = [];
       for (const c of nonUdtaChildren) {
         const chunk = new Uint8Array(moovBuffer, c.offset, c.size);
         if (c.type === 'trak') {
-          const updatedTrak = updateVideoTrakBox(chunk, tags, !updates.scrubAll && !!updates.dolbyVision, !!updates.scrubAll);
+          const updatedTrak = updateVideoTrakBox(chunk, tags, !!updates.scrubAll);
           processedChildren.push(updatedTrak);
         } else {
           processedChildren.push(chunk);
@@ -2931,13 +2741,11 @@ const MP4Editor = (function () {
         adjustChunkOffsets(newMoov, delta);
       }
 
-      // 9. Check if Apple preset or QuickTime compatibility requested
-      const isApple = (tags.make && /apple/i.test(tags.make)) || (tags.model && /iphone|ipad/i.test(tags.model)) || !!updates.dolbyVision || (updates.outputFormat === 'mov');
-
-      // If Apple/QuickTime format, ensure ftyp box starts with 'qt  ' major brand
+      // 9. If output format is QuickTime (.mov), ensure ftyp box starts with 'qt  ' major brand
       let updatedFtyp = null;
+      const isMov = (updates.outputFormat === 'mov');
       const ftypBox = topBoxes.find(b => b.type === 'ftyp');
-      if (isApple && ftypBox && ftypBox.offset === 0 && ftypBox.size >= 20) {
+      if (isMov && ftypBox && ftypBox.offset === 0 && ftypBox.size >= 20) {
         const ftypRaw = await readFileSlice(file, 0, ftypBox.size);
         const ftypBytes = new Uint8Array(ftypRaw.slice(0));
         const ftypDv = new DataView(ftypBytes.buffer);
@@ -2993,7 +2801,7 @@ const MP4Editor = (function () {
         }
       }
 
-      const outMime = (isApple || updates.outputFormat === 'mov') ? 'video/quicktime' : (file.type || 'video/mp4');
+      const outMime = isMov ? 'video/quicktime' : (file.type || 'video/mp4');
       return new Blob(slices, { type: outMime });
     }
   };
@@ -3002,7 +2810,6 @@ const MP4Editor = (function () {
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = MP4Editor;
 }
-
 
   </script>
 
@@ -3599,7 +3406,6 @@ document.addEventListener('DOMContentLoaded', () => {
       focalLength35mm: '26',
       fNumber: '1.6',
       cameraIdentifier: 'Back',
-      dolbyVision: true,
       horizontalAccuracy: '10.84'
     },
     'iphone16promax': {
@@ -3610,7 +3416,6 @@ document.addEventListener('DOMContentLoaded', () => {
       focalLength35mm: '24',
       fNumber: '1.78',
       cameraIdentifier: 'Back',
-      dolbyVision: true,
       horizontalAccuracy: '5.00'
     },
     'iphone15pro': {
@@ -3621,7 +3426,6 @@ document.addEventListener('DOMContentLoaded', () => {
       focalLength35mm: '24',
       fNumber: '1.78',
       cameraIdentifier: 'Back',
-      dolbyVision: true,
       horizontalAccuracy: '5.00'
     },
     's24ultra': {
@@ -3705,13 +3509,12 @@ document.addEventListener('DOMContentLoaded', () => {
       if (cameraIdentifierInput) {
         cameraIdentifierInput.value = preset.cameraIdentifier || 'Back';
       }
-      if (dolbyVisionToggle) {
-        dolbyVisionToggle.checked = !!preset.dolbyVision;
-      }
       if (preset.horizontalAccuracy && !horizontalAccuracyInput.value) {
         horizontalAccuracyInput.value = preset.horizontalAccuracy;
       }
-      if (preset.make === 'Apple' && document.getElementById('exportFormatSelect')) document.getElementById('exportFormatSelect').value = 'mov';
+      if (preset.make === 'Apple' && document.getElementById('exportFormatSelect')) {
+        document.getElementById('exportFormatSelect').value = 'mov';
+      }
       showToast(`Applied preset: ${preset.model}`, 'info');
     }
   });
@@ -3829,8 +3632,8 @@ document.addEventListener('DOMContentLoaded', () => {
         horizontalAccuracy: horizontalAccuracyInput.value.trim()
       };
 
-      const isApple = (tags.make && /apple/i.test(tags.make)) || (tags.model && /iphone|ipad/i.test(tags.model)) || (dolbyVisionToggle && dolbyVisionToggle.checked);
       const exportFormatSelect = document.getElementById('exportFormatSelect');
+      const isApple = (tags.make && /apple/i.test(tags.make)) || (tags.model && /iphone|ipad/i.test(tags.model));
       const chosenFormat = exportFormatSelect ? exportFormatSelect.value : (isApple ? 'mov' : 'mp4');
 
       const updates = {
@@ -3838,7 +3641,6 @@ document.addEventListener('DOMContentLoaded', () => {
         modifyDate: mDate,
         location,
         tags,
-        dolbyVision: dolbyVisionToggle ? dolbyVisionToggle.checked : false,
         outputFormat: chosenFormat,
         rotation: userChangedRotation ? selectedRotation : undefined,
         c2pa: activeC2PA,
