@@ -250,11 +250,14 @@ const MP4Editor = (function () {
         lensModel: '',
         focalLength35mm: '',
         fNumber: '',
-        horizontalAccuracy: ''
+        horizontalAccuracy: '',
+        cameraIdentifier: ''
       },
       stream: {
         videoCodec: '',
         compressorName: '',
+        isDolbyVision: false,
+        dolbyVisionProfile: '',
         bitDepth: 24,
         frameRate: 0,
         cleanAperture: '',
@@ -328,9 +331,11 @@ const MP4Editor = (function () {
               if (keyName === 'com.apple.quicktime.make') result.tags.make = val;
               else if (keyName === 'com.apple.quicktime.model') result.tags.model = val;
               else if (keyName === 'com.apple.quicktime.software') result.tags.software = val;
+              else if (keyName === 'com.apple.quicktime.camera.identifier') result.tags.cameraIdentifier = val;
               else if (keyName === 'com.apple.quicktime.camera.lens_model') result.tags.lensModel = val;
               else if (keyName === 'com.apple.quicktime.camera.focal_length.35mm_equivalent') result.tags.focalLength35mm = val;
               else if (keyName === 'com.apple.quicktime.camera.iris_f_number') result.tags.fNumber = val;
+              else if (keyName === 'com.apple.quicktime.camera.lens.iris.f-number' && !result.tags.fNumber) result.tags.fNumber = val;
               else if (keyName === 'com.apple.quicktime.location.accuracy.horizontal') result.tags.horizontalAccuracy = val;
               else if (keyName === 'com.apple.quicktime.location.ISO6709') {
                 if (!result.locationRaw) {
@@ -445,6 +450,25 @@ const MP4Editor = (function () {
 
                   if (isVideo) {
                     result.stream.videoCodec = entryType;
+                    if (entryType === 'dvh1' || entryType === 'dvhe') {
+                      result.stream.isDolbyVision = true;
+                      result.stream.dolbyVisionProfile = 'Profile 8.4';
+                    }
+                    if (entryOffset + 86 < stsd.payloadOffset + stsd.payloadSize) {
+                      const entrySz = readUint32(view, entryOffset);
+                      let subO = entryOffset + 86;
+                      while (subO + 8 <= entryOffset + entrySz) {
+                        const sbSz = readUint32(view, subO);
+                        const sbTp = readASCII(view, subO + 4, 4);
+                        if (sbTp === 'dvvC' || sbTp === 'dvcC') {
+                          result.stream.isDolbyVision = true;
+                          result.stream.dolbyVisionProfile = 'Profile 8.4';
+                        }
+                        if (sbSz < 8) break;
+                        subO += sbSz;
+                      }
+                    }
+
                     if (entryOffset + 51 < stsd.payloadOffset + stsd.payloadSize) {
                       const nameLen = view.getUint8(entryOffset + 50);
                       if (nameLen > 0 && nameLen <= 31) {
@@ -452,7 +476,7 @@ const MP4Editor = (function () {
                       }
                     }
                     if (!result.stream.compressorName) {
-                      if (entryType === 'hvc1' || entryType === 'hev1') result.stream.compressorName = 'HEVC';
+                      if (entryType === 'dvh1' || entryType === 'hvc1' || entryType === 'hev1') result.stream.compressorName = 'HEVC';
                       else if (entryType === 'avc1') result.stream.compressorName = 'H.264 / AVC';
                       else if (entryType.startsWith('ap')) result.stream.compressorName = 'Apple ProRes';
                       else result.stream.compressorName = entryType.toUpperCase();
@@ -476,6 +500,12 @@ const MP4Editor = (function () {
               }
             }
           }
+        }
+
+        // Check for track-level 'meta' box (AVFoundation video track optics)
+        const trakMeta = trakChildren.find(b => b.type === 'meta');
+        if (trakMeta) {
+          parseMetaBox(moovBuffer, trakMeta);
         }
 
         if (isVideo && result.width === 0 && rawW > 0 && rawH > 0) {
@@ -666,20 +696,12 @@ const MP4Editor = (function () {
    * Helper: Builds Apple QuickTime 'meta' box (keys + ilst) for professional optics & camera metadata.
    * Recognized by ExifTool, metadata2go, Apple Photos, and Final Cut Pro.
    */
-  function buildQuickTimeMetaBox(tags, locationString, cDateISO) {
-    const keyDefinitions = [
-      { name: 'com.apple.quicktime.location.accuracy.horizontal', val: tags.horizontalAccuracy },
-      { name: 'com.apple.quicktime.location.ISO6709', val: locationString },
-      { name: 'com.apple.quicktime.model', val: tags.model },
-      { name: 'com.apple.quicktime.software', val: tags.software },
-      { name: 'com.apple.quicktime.camera.lens_model', val: tags.lensModel },
-      { name: 'com.apple.quicktime.camera.focal_length.35mm_equivalent', val: tags.focalLength35mm },
-      { name: 'com.apple.quicktime.make', val: tags.make },
-      { name: 'com.apple.quicktime.camera.iris_f_number', val: tags.fNumber },
-      { name: 'com.apple.quicktime.creationdate', val: cDateISO }
-    ].filter(item => item.val && String(item.val).trim().length > 0);
-
-    if (keyDefinitions.length === 0) return null;
+  /**
+   * Helper: Builds an Apple QuickTime 'meta' box (keys + ilst) from key definitions.
+   * Standard QuickTime .mov container format (hdlr immediately at byte 8, NOT FullBox).
+   */
+  function buildAppleMetaBoxFromKeyDefs(keyDefinitions) {
+    if (!keyDefinitions || keyDefinitions.length === 0) return null;
 
     // 1. Build 'hdlr' box with handler 'mdta' (34 bytes total: 8 byte header + 26 byte payload)
     const hdlrPayload = new Uint8Array(26);
@@ -753,7 +775,6 @@ const MP4Editor = (function () {
     }
 
     // 4. Build 'meta' box (Standard box in QuickTime .mov, NOT FullBox!)
-    // AVFoundation expects 'hdlr' immediately at byte 8 of 'meta'.
     const metaPayload = new Uint8Array(hdlrBox.length + keysBox.length + ilstBox.length);
     let metaOff = 0;
     metaPayload.set(hdlrBox, metaOff); metaOff += hdlrBox.length;
@@ -761,6 +782,343 @@ const MP4Editor = (function () {
     metaPayload.set(ilstBox, metaOff); metaOff += ilstBox.length;
 
     return createBox('meta', metaPayload);
+  }
+
+  /**
+   * Helper: Builds Movie-Level Apple QuickTime 'meta' box (keys + ilst).
+   */
+  function buildQuickTimeMetaBox(tags, locationString, cDateISO) {
+    const cleanFNumber = tags.fNumber ? String(tags.fNumber).replace(/^[fF]\/?/, '') : '';
+    const keyDefinitions = [
+      { name: 'com.apple.quicktime.location.accuracy.horizontal', val: tags.horizontalAccuracy },
+      { name: 'com.apple.quicktime.location.ISO6709', val: locationString },
+      { name: 'com.apple.quicktime.model', val: tags.model },
+      { name: 'com.apple.quicktime.software', val: tags.software },
+      { name: 'com.apple.quicktime.camera.identifier', val: tags.cameraIdentifier || 'Back' },
+      { name: 'com.apple.quicktime.camera.lens_model', val: tags.lensModel },
+      { name: 'com.apple.quicktime.camera.focal_length.35mm_equivalent', val: tags.focalLength35mm },
+      { name: 'com.apple.quicktime.make', val: tags.make },
+      { name: 'com.apple.quicktime.camera.iris_f_number', val: cleanFNumber || tags.fNumber },
+      { name: 'com.apple.quicktime.camera.lens.iris.f-number', val: cleanFNumber || tags.fNumber },
+      { name: 'com.apple.quicktime.creationdate', val: cDateISO }
+    ].filter(item => item.val && String(item.val).trim().length > 0);
+
+    return buildAppleMetaBoxFromKeyDefs(keyDefinitions);
+  }
+
+  /**
+   * Helper: Builds Track-Level Apple QuickTime 'meta' box (keys + ilst).
+   * AVFoundation uses track.metadata to read lens optics for iOS Photos Info card.
+   */
+  function buildTrackMetaBox(tags) {
+    const cleanFNumber = tags.fNumber ? String(tags.fNumber).replace(/^[fF]\/?/, '') : '';
+    const keyDefinitions = [
+      { name: 'com.apple.quicktime.camera.identifier', val: tags.cameraIdentifier || 'Back' },
+      { name: 'com.apple.quicktime.camera.lens_model', val: tags.lensModel },
+      { name: 'com.apple.quicktime.camera.focal_length.35mm_equivalent', val: tags.focalLength35mm },
+      { name: 'com.apple.quicktime.camera.iris_f_number', val: cleanFNumber || tags.fNumber },
+      { name: 'com.apple.quicktime.camera.lens.iris.f-number', val: cleanFNumber || tags.fNumber }
+    ].filter(item => item.val && String(item.val).trim().length > 0);
+
+    return buildAppleMetaBoxFromKeyDefs(keyDefinitions);
+  }
+
+  /**
+   * Helper: Builds Dolby Vision Configuration Box ('dvvC', 24 bytes).
+   * Signals Dolby Vision Profile 8.4 (HLG compatibility).
+   */
+  function buildDvvCBox(is4K) {
+    const payload = new Uint8Array(16);
+    payload[0] = 1; // dv_version_major
+    payload[1] = 0; // dv_version_minor
+    const level = is4K ? 7 : 4; // level 7 for 4K+, level 4 for 1080p
+    payload[2] = (8 << 1) | (level >> 5); // profile 8
+    payload[3] = ((level & 0x1F) << 3) | (1 << 2) | (0 << 1) | 1; // rpu=1, bl=1
+    payload[4] = 0x40; // compatibility_id = 4 (HLG)
+    // remaining 11 bytes: 0 reserved
+    return createBox('dvvC', payload);
+  }
+
+  /**
+   * Helper: Builds Color Parameter Box ('colr', 19 bytes).
+   * BT.2020 primaries, ARIB STD-B67 (HLG) transfer, BT.2020 non-constant matrix.
+   */
+  function buildColrBox() {
+    const payload = new Uint8Array(11);
+    const dv = new DataView(payload.buffer);
+    writeASCII(dv, 0, 'nclx');
+    dv.setUint16(4, 9, false);  // Primaries: 9 (BT.2020)
+    dv.setUint16(6, 18, false); // Transfer: 18 (ARIB STD-B67 / HLG)
+    dv.setUint16(8, 9, false);  // Matrix: 9 (BT.2020 NCL)
+    dv.setUint8(10, 0);         // Full range: 0 (limited)
+    return createBox('colr', payload);
+  }
+
+  /**
+   * Updates a video track (trak) box:
+   * 1. Injects/updates track-level 'meta' box (AVFoundation videoTrack.metadata for lens & optics)
+   * 2. If dolbyVision is true, signals Apple Dolby Vision Profile 8.4:
+   *    - FourCC set to 'dvh1'
+   *    - Compressor name set to 'HEVC'
+   *    - Sub-boxes updated with 'colr' (BT.2020 HLG, 19 bytes) and 'dvvC' (Profile 8.4, 24 bytes)
+   *    - Recalculates sizes for stsd, stbl, minf, mdia, trak.
+   */
+  function updateVideoTrakBox(trakBytes, tags, dolbyVision, scrubAll) {
+    const dv = new DataView(trakBytes.buffer, trakBytes.byteOffset, trakBytes.byteLength);
+    const trakSize = dv.getUint32(0, false);
+
+    // Parse top children of trak
+    const children = [];
+    let off = 8;
+    while (off + 8 <= trakSize) {
+      const sz = dv.getUint32(off, false);
+      const tp = readASCII(dv, off + 4, 4);
+      children.push({ type: tp, offset: off, size: sz });
+      if (sz < 8) break;
+      off += sz;
+    }
+
+    // Check if this track is a video track
+    const tkhdChild = children.find(c => c.type === 'tkhd');
+    let isVideo = false;
+    let trackWidth = 0;
+    let trackHeight = 0;
+    if (tkhdChild) {
+      const tv = dv.getUint8(tkhdChild.offset + 8);
+      const wOff = tkhdChild.offset + (tv === 1 ? 96 : 84);
+      const hOff = tkhdChild.offset + (tv === 1 ? 100 : 88);
+      trackWidth = dv.getUint32(wOff, false) >> 16;
+      trackHeight = dv.getUint32(hOff, false) >> 16;
+      if (trackWidth > 0 && trackHeight > 0) isVideo = true;
+    }
+
+    const mdiaChild = children.find(c => c.type === 'mdia');
+    if (mdiaChild) {
+      const mdiaBytes = trakBytes.subarray(mdiaChild.offset, mdiaChild.offset + mdiaChild.size);
+      const mdiaDv = new DataView(mdiaBytes.buffer, mdiaBytes.byteOffset, mdiaBytes.byteLength);
+      let mOff = 8;
+      while (mOff + 8 <= mdiaChild.size) {
+        const mSz = mdiaDv.getUint32(mOff, false);
+        const mTp = readASCII(mdiaDv, mOff + 4, 4);
+        if (mTp === 'hdlr' && mSz >= 20) {
+          const hType = readASCII(mdiaDv, mOff + 16, 4);
+          if (hType === 'vide') isVideo = true;
+          else if (hType === 'soun' || hType === 'hint' || hType === 'meta') isVideo = false;
+        }
+        if (mSz < 8) break;
+        mOff += mSz;
+      }
+    }
+
+    // If not video track, return unmodified
+    if (!isVideo) return trakBytes;
+
+    // Filter out existing trak.meta
+    const nonMetaChildren = children.filter(c => c.type !== 'meta');
+    const newTrakMeta = scrubAll ? null : buildTrackMetaBox(tags);
+
+    let updatedMdiaBytes = null;
+    if (dolbyVision && mdiaChild) {
+      const mdiaBytes = trakBytes.subarray(mdiaChild.offset, mdiaChild.offset + mdiaChild.size);
+      const mdiaDv = new DataView(mdiaBytes.buffer, mdiaBytes.byteOffset, mdiaBytes.byteLength);
+
+      const mChildren = [];
+      let mOff = 8;
+      while (mOff + 8 <= mdiaChild.size) {
+        const mSz = mdiaDv.getUint32(mOff, false);
+        const mTp = readASCII(mdiaDv, mOff + 4, 4);
+        mChildren.push({ type: mTp, offset: mOff, size: mSz });
+        if (mSz < 8) break;
+        mOff += mSz;
+      }
+
+      const minfChild = mChildren.find(c => c.type === 'minf');
+      if (minfChild) {
+        const minfBytes = mdiaBytes.subarray(minfChild.offset, minfChild.offset + minfChild.size);
+        const minfDv = new DataView(minfBytes.buffer, minfBytes.byteOffset, minfBytes.byteLength);
+
+        const miChildren = [];
+        let miOff = 8;
+        while (miOff + 8 <= minfChild.size) {
+          const miSz = minfDv.getUint32(miOff, false);
+          const miTp = readASCII(minfDv, miOff + 4, 4);
+          miChildren.push({ type: miTp, offset: miOff, size: miSz });
+          if (miSz < 8) break;
+          miOff += miSz;
+        }
+
+        const stblChild = miChildren.find(c => c.type === 'stbl');
+        if (stblChild) {
+          const stblBytes = minfBytes.subarray(stblChild.offset, minfChild.offset + minfChild.size);
+          const stblDv = new DataView(stblBytes.buffer, stblBytes.byteOffset, stblBytes.byteLength);
+
+          const sChildren = [];
+          let sOff = 8;
+          while (sOff + 8 <= stblChild.size) {
+            const sSz = stblDv.getUint32(sOff, false);
+            const sTp = readASCII(stblDv, sOff + 4, 4);
+            sChildren.push({ type: sTp, offset: sOff, size: sSz });
+            if (sSz < 8) break;
+            sOff += sSz;
+          }
+
+          const stsdChild = sChildren.find(c => c.type === 'stsd');
+          if (stsdChild && stsdChild.size >= 24) {
+            const stsdBytes = stblBytes.subarray(stsdChild.offset, stsdChild.offset + stsdChild.size);
+            const stsdDv = new DataView(stsdBytes.buffer, stsdBytes.byteOffset, stsdBytes.byteLength);
+
+            const entrySz = stsdDv.getUint32(16, false);
+            const entryBytes = stsdBytes.subarray(16, 16 + entrySz);
+
+            // Sub-boxes of VisualSampleEntry start at offset 86
+            const subBoxes = [];
+            let subOff = 86;
+            while (subOff + 8 <= entrySz) {
+              const sbSz = stsdDv.getUint32(16 + subOff, false);
+              const sbTp = readASCII(stsdDv, 16 + subOff + 4, 4);
+              if (sbSz < 8) break;
+              subBoxes.push({
+                type: sbTp,
+                offset: subOff,
+                size: sbSz,
+                bytes: entryBytes.subarray(subOff, subOff + sbSz)
+              });
+              subOff += sbSz;
+            }
+
+            const is4K = (trackWidth >= 3840 || trackHeight >= 2160);
+            const dvvCBox = buildDvvCBox(is4K);
+            const colrBox = buildColrBox();
+
+            // Filter out existing colr and dvvC / dvcC
+            const keptSubBoxes = subBoxes.filter(b => b.type !== 'colr' && b.type !== 'dvvC' && b.type !== 'dvcC');
+            let newSubTotal = dvvCBox.length + colrBox.length;
+            for (const sb of keptSubBoxes) newSubTotal += sb.size;
+
+            const newEntrySz = 86 + newSubTotal;
+            const newEntryBytes = new Uint8Array(newEntrySz);
+            newEntryBytes.set(entryBytes.subarray(0, 86));
+            const newEntryDv = new DataView(newEntryBytes.buffer);
+
+            // Set new entry size and FourCC: 'dvh1'
+            writeUint32(newEntryDv, 0, newEntrySz);
+            writeASCII(newEntryDv, 4, 'dvh1');
+
+            // Set compressor name to 'HEVC' (Pascal string: length 4 + 'HEVC' + 0s up to 32 bytes)
+            newEntryDv.setUint8(50, 4);
+            writeASCII(newEntryDv, 51, 'HEVC');
+            for (let j = 55; j < 82; j++) newEntryDv.setUint8(j, 0);
+
+            // Set bit depth to 24
+            newEntryDv.setUint16(82, 24, false);
+
+            let eCopyOff = 86;
+            for (const sb of keptSubBoxes) {
+              newEntryBytes.set(sb.bytes, eCopyOff);
+              eCopyOff += sb.size;
+            }
+            newEntryBytes.set(colrBox, eCopyOff); eCopyOff += colrBox.length;
+            newEntryBytes.set(dvvCBox, eCopyOff); eCopyOff += dvvCBox.length;
+
+            // Rebuild stsd
+            const newStsdSz = 16 + newEntrySz;
+            const newStsdBytes = new Uint8Array(newStsdSz);
+            newStsdBytes.set(stsdBytes.subarray(0, 16));
+            writeUint32(new DataView(newStsdBytes.buffer), 0, newStsdSz);
+            newStsdBytes.set(newEntryBytes, 16);
+
+            // Rebuild stbl
+            let newStblSz = 8 + newStsdSz;
+            for (const sc of sChildren) {
+              if (sc.type !== 'stsd') newStblSz += sc.size;
+            }
+            const newStblBytes = new Uint8Array(newStblSz);
+            writeUint32(new DataView(newStblBytes.buffer), 0, newStblSz);
+            writeASCII(new DataView(newStblBytes.buffer), 4, 'stbl');
+            let stblCopyOff = 8;
+            for (const sc of sChildren) {
+              if (sc.type === 'stsd') {
+                newStblBytes.set(newStsdBytes, stblCopyOff);
+                stblCopyOff += newStsdBytes.length;
+              } else {
+                newStblBytes.set(stblBytes.subarray(sc.offset, sc.offset + sc.size), stblCopyOff);
+                stblCopyOff += sc.size;
+              }
+            }
+
+            // Rebuild minf
+            let newMinfSz = 8 + newStblSz;
+            for (const mc of miChildren) {
+              if (mc.type !== 'stbl') newMinfSz += mc.size;
+            }
+            const newMinfBytes = new Uint8Array(newMinfSz);
+            writeUint32(new DataView(newMinfBytes.buffer), 0, newMinfSz);
+            writeASCII(new DataView(newMinfBytes.buffer), 4, 'minf');
+            let minfCopyOff = 8;
+            for (const mc of miChildren) {
+              if (mc.type === 'stbl') {
+                newMinfBytes.set(newStblBytes, minfCopyOff);
+                minfCopyOff += newStblBytes.length;
+              } else {
+                newMinfBytes.set(minfBytes.subarray(mc.offset, mc.offset + mc.size), minfCopyOff);
+                minfCopyOff += mc.size;
+              }
+            }
+
+            // Rebuild mdia
+            let newMdiaSz = 8 + newMinfSz;
+            for (const mc of mChildren) {
+              if (mc.type !== 'minf') newMdiaSz += mc.size;
+            }
+            updatedMdiaBytes = new Uint8Array(newMdiaSz);
+            writeUint32(new DataView(updatedMdiaBytes.buffer), 0, newMdiaSz);
+            writeASCII(new DataView(updatedMdiaBytes.buffer), 4, 'mdia');
+            let mdiaCopyOff = 8;
+            for (const mc of mChildren) {
+              if (mc.type === 'minf') {
+                updatedMdiaBytes.set(newMinfBytes, mdiaCopyOff);
+                mdiaCopyOff += newMinfBytes.length;
+              } else {
+                updatedMdiaBytes.set(mdiaBytes.subarray(mc.offset, mc.offset + mc.size), mdiaCopyOff);
+                mdiaCopyOff += mc.size;
+              }
+            }
+          }
+        }
+      }
+    }
+
+    // Assemble new trak box
+    let newTrakSz = 8;
+    for (const c of nonMetaChildren) {
+      if (c.type === 'mdia' && updatedMdiaBytes) {
+        newTrakSz += updatedMdiaBytes.length;
+      } else {
+        newTrakSz += c.size;
+      }
+    }
+    if (newTrakMeta) newTrakSz += newTrakMeta.length;
+
+    const newTrakBytes = new Uint8Array(newTrakSz);
+    const newTrakDv = new DataView(newTrakBytes.buffer);
+    writeUint32(newTrakDv, 0, newTrakSz);
+    writeASCII(newTrakDv, 4, 'trak');
+
+    let trakCopyOff = 8;
+    for (const c of nonMetaChildren) {
+      if (c.type === 'mdia' && updatedMdiaBytes) {
+        newTrakBytes.set(updatedMdiaBytes, trakCopyOff);
+        trakCopyOff += updatedMdiaBytes.length;
+      } else {
+        newTrakBytes.set(trakBytes.subarray(c.offset, c.offset + c.size), trakCopyOff);
+        trakCopyOff += c.size;
+      }
+    }
+    if (newTrakMeta) {
+      newTrakBytes.set(newTrakMeta, trakCopyOff);
+    }
+
+    return newTrakBytes;
   }
 
   /**
@@ -1033,26 +1391,36 @@ const MP4Editor = (function () {
       const newUdta = buildUdtaBox(tags, locationString);
       const newMoovMeta = updates.scrubAll ? null : buildQuickTimeMetaBox(tags, locationString, cDateISO);
 
-      // 4. Calculate new moov size and construct new moov payload
-      let nonUdtaTotalSize = 0;
+      // 4. Process non-udta children (updating video track with track-level optics & Dolby Vision)
+      const processedChildren = [];
       for (const c of nonUdtaChildren) {
-        nonUdtaTotalSize += c.size;
+        const chunk = new Uint8Array(moovBuffer, c.offset, c.size);
+        if (c.type === 'trak') {
+          const updatedTrak = updateVideoTrakBox(chunk, tags, !updates.scrubAll && !!updates.dolbyVision, !!updates.scrubAll);
+          processedChildren.push(updatedTrak);
+        } else {
+          processedChildren.push(chunk);
+        }
+      }
+
+      let processedTotalSize = 0;
+      for (const p of processedChildren) {
+        processedTotalSize += p.length;
       }
       const newUdtaSize = newUdta ? newUdta.length : 0;
       const newMoovMetaSize = newMoovMeta ? newMoovMeta.length : 0;
-      const newMoovSize = 8 + nonUdtaTotalSize + newMoovMetaSize + newUdtaSize;
+      const newMoovSize = 8 + processedTotalSize + newMoovMetaSize + newUdtaSize;
 
       const newMoov = new Uint8Array(newMoovSize);
       const newMoovView = new DataView(newMoov.buffer);
       writeUint32(newMoovView, 0, newMoovSize);
       writeASCII(newMoovView, 4, 'moov');
 
-      // Copy non-udta children
+      // Copy processed children (including updated video track)
       let copyOffset = 8;
-      for (const c of nonUdtaChildren) {
-        const chunk = new Uint8Array(moovBuffer, c.offset, c.size);
-        newMoov.set(chunk, copyOffset);
-        copyOffset += c.size;
+      for (const p of processedChildren) {
+        newMoov.set(p, copyOffset);
+        copyOffset += p.length;
       }
 
       // Append new QuickTime meta box (keys + ilst)
