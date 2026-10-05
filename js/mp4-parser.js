@@ -328,21 +328,21 @@ const MP4Editor = (function () {
             const rawCode = (item.type.charCodeAt(0) << 24) | (item.type.charCodeAt(1) << 16) | (item.type.charCodeAt(2) << 8) | item.type.charCodeAt(3);
             const keyName = keysMap[rawCode];
             if (keyName) {
-              if (keyName === 'com.apple.quicktime.make') result.tags.make = val;
-              else if (keyName === 'com.apple.quicktime.model') result.tags.model = val;
-              else if (keyName === 'com.apple.quicktime.software') result.tags.software = val;
-              else if (keyName === 'com.apple.quicktime.camera.identifier') result.tags.cameraIdentifier = val;
-              else if (keyName === 'com.apple.quicktime.camera.lens_model') result.tags.lensModel = val;
-              else if (keyName === 'com.apple.quicktime.camera.focal_length.35mm_equivalent') result.tags.focalLength35mm = val;
-              else if (keyName === 'com.apple.quicktime.camera.iris_f_number') result.tags.fNumber = val;
-              else if (keyName === 'com.apple.quicktime.camera.lens.iris.f-number' && !result.tags.fNumber) result.tags.fNumber = val;
-              else if (keyName === 'com.apple.quicktime.location.accuracy.horizontal') result.tags.horizontalAccuracy = val;
-              else if (keyName === 'com.apple.quicktime.location.ISO6709') {
+              if (keyName === 'com.apple.quicktime.make' || keyName === 'make') result.tags.make = val;
+              else if (keyName === 'com.apple.quicktime.model' || keyName === 'model') result.tags.model = val;
+              else if (keyName === 'com.apple.quicktime.software' || keyName === 'software') result.tags.software = val;
+              else if (keyName === 'com.apple.quicktime.camera.identifier' || keyName === 'camera.identifier') result.tags.cameraIdentifier = val;
+              else if (keyName === 'com.apple.quicktime.camera.lens_model' || keyName === 'camera.lens_model') result.tags.lensModel = val;
+              else if (keyName === 'com.apple.quicktime.camera.focal_length.35mm_equivalent' || keyName === 'camera.focal_length.35mm_equivalent') result.tags.focalLength35mm = val;
+              else if (keyName === 'com.apple.quicktime.camera.iris_f_number' || keyName === 'camera.iris_f_number') result.tags.fNumber = val;
+              else if ((keyName === 'com.apple.quicktime.camera.lens.iris.f-number' || keyName === 'camera.lens.iris.f-number') && !result.tags.fNumber) result.tags.fNumber = val;
+              else if (keyName === 'com.apple.quicktime.location.accuracy.horizontal' || keyName === 'location.accuracy.horizontal') result.tags.horizontalAccuracy = val;
+              else if (keyName === 'com.apple.quicktime.location.ISO6709' || keyName === 'location.ISO6709') {
                 if (!result.locationRaw) {
                   result.locationRaw = val;
                   if (typeof GeoUtils !== 'undefined') result.location = GeoUtils.parseISO6709(val);
                 }
-              } else if (keyName === 'com.apple.quicktime.creationdate' && !result.creationDate) {
+              } else if ((keyName === 'com.apple.quicktime.creationdate' || keyName === 'creationdate') && !result.creationDate) {
                 const d = new Date(val);
                 if (!isNaN(d.getTime())) result.creationDate = d;
               }
@@ -557,6 +557,22 @@ const MP4Editor = (function () {
       for (const mb of udtaMetaBoxes) {
         parseMetaBox(moovBuffer, mb);
       }
+
+      // Check 'XMP_' inside 'udta'
+      const xmpBox = udtaChildren.find(b => b.type === 'XMP_');
+      if (xmpBox && xmpBox.payloadSize > 0) {
+        const xmpStr = readASCII(view, xmpBox.payloadOffset, xmpBox.payloadSize);
+        const lensMatch = xmpStr.match(/(?:exif:LensModel|exifEX:LensModel|aux:Lens)="([^"]+)"/);
+        if (lensMatch && !result.tags.lensModel) result.tags.lensModel = lensMatch[1];
+        const focalMatch = xmpStr.match(/exif:FocalLengthIn35mmFilm="([^"]+)"/);
+        if (focalMatch && !result.tags.focalLength35mm) result.tags.focalLength35mm = focalMatch[1];
+        const fNumMatch = xmpStr.match(/exif:FNumber="([^"]+)"/);
+        if (fNumMatch && !result.tags.fNumber) result.tags.fNumber = fNumMatch[1];
+        const makeMatch = xmpStr.match(/tiff:Make="([^"]+)"/);
+        if (makeMatch && !result.tags.make) result.tags.make = makeMatch[1];
+        const modelMatch = xmpStr.match(/tiff:Model="([^"]+)"/);
+        if (modelMatch && !result.tags.model) result.tags.model = modelMatch[1];
+      }
     }
 
     return result;
@@ -621,7 +637,51 @@ const MP4Editor = (function () {
   }
 
   /**
-   * Creates a 'udta' (User Data) box containing GPS ('©xyz') and 'meta.ilst' tags.
+   * Helper: Builds an XMP ('XMP_') atom containing standard RDF camera & lens metadata.
+   * Widely read by Apple Photos, Adobe Premiere, Final Cut Pro, and ExifTool.
+   */
+  function buildXMPBox(tags) {
+    const cleanFNumber = tags.fNumber ? String(tags.fNumber).replace(/^[fF]\/?/, '') : '';
+    const lens = tags.lensModel || '';
+    const make = tags.make || '';
+    const model = tags.model || '';
+    const focal35 = tags.focalLength35mm || '';
+
+    if (!lens && !make && !model && !focal35 && !cleanFNumber) return null;
+
+    function esc(s) {
+      return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+    }
+
+    const xmpString =
+      '<?xpacket begin="\uFEFF" id="W5M0MpCehiHzreSzNTczkc9d"?>\n' +
+      '<x:xmpmeta xmlns:x="adobe:ns:meta/" x:xmptk="XMP Core 6.0.0">\n' +
+      ' <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">\n' +
+      '  <rdf:Description rdf:about=""\n' +
+      '    xmlns:tiff="http://ns.adobe.com/tiff/1.0/"\n' +
+      '    xmlns:exif="http://ns.adobe.com/exif/1.0/"\n' +
+      '    xmlns:exifEX="http://cipa.jp/exif/1.0/"\n' +
+      '    xmlns:aux="http://ns.adobe.com/exif/1.0/aux/"' +
+      (make ? '\n    tiff:Make="' + esc(make) + '"' : '') +
+      (model ? '\n    tiff:Model="' + esc(model) + '"' : '') +
+      (lens ? '\n    exif:LensModel="' + esc(lens) + '"' : '') +
+      (lens ? '\n    exifEX:LensModel="' + esc(lens) + '"' : '') +
+      (lens ? '\n    aux:Lens="' + esc(lens) + '"' : '') +
+      (focal35 ? '\n    exif:FocalLengthIn35mmFilm="' + esc(focal35) + '"' : '') +
+      (cleanFNumber ? '\n    exif:FNumber="' + esc(cleanFNumber) + '"' : '') +
+      (cleanFNumber ? '\n    exif:ApertureValue="' + esc(cleanFNumber) + '"' : '') +
+      '>\n' +
+      '  </rdf:Description>\n' +
+      ' </rdf:RDF>\n' +
+      '</x:xmpmeta>\n' +
+      '<?xpacket end="w"?>';
+
+    const xmpBytes = encodeUTF8(xmpString);
+    return createBox('XMP_', xmpBytes);
+  }
+
+  /**
+   * Creates a 'udta' (User Data) box containing GPS ('©xyz'), 'meta.ilst' tags, and 'XMP_'.
    */
   function buildUdtaBox(tags, locationString) {
     const parts = [];
@@ -631,7 +691,7 @@ const MP4Editor = (function () {
       const locBytes = encodeUTF8(locationString);
       const xyzPayload = new Uint8Array(2 + locBytes.length);
       const dv = new DataView(xyzPayload.buffer);
-      dv.setUint16(0, 0x15c7); // QuickTime language code English
+      dv.setUint16(0, 0); // Neutral language (universal compatibility)
       xyzPayload.set(locBytes, 2);
       parts.push(createBox('©xyz', xyzPayload));
     }
@@ -678,6 +738,12 @@ const MP4Editor = (function () {
       const metaBox = createBox('meta', metaPayload);
 
       parts.push(metaBox);
+    }
+
+    // 3. Add XMP packet ('XMP_') inside udta
+    const xmpBox = buildXMPBox(tags);
+    if (xmpBox) {
+      parts.push(xmpBox);
     }
 
     if (parts.length === 0) return null;
@@ -750,7 +816,7 @@ const MP4Editor = (function () {
       writeUint32(dv, 0, dataSize);
       writeASCII(dv, 4, 'data');
       writeUint32(dv, 8, 1); // type 1: UTF-8 text
-      writeUint32(dv, 12, 0x555315c7); // locale: US / English
+      writeUint32(dv, 12, 0); // locale: 0 = universal / all locales
       dataBox.set(valBytes, 16);
 
       // Item box: size (4), tag (4 bytes 1-based index: i + 1), dataBox
@@ -791,16 +857,28 @@ const MP4Editor = (function () {
     const cleanFNumber = tags.fNumber ? String(tags.fNumber).replace(/^[fF]\/?/, '') : '';
     const keyDefinitions = [
       { name: 'com.apple.quicktime.location.accuracy.horizontal', val: tags.horizontalAccuracy },
+      { name: 'location.accuracy.horizontal', val: tags.horizontalAccuracy },
       { name: 'com.apple.quicktime.location.ISO6709', val: locationString },
-      { name: 'com.apple.quicktime.model', val: tags.model },
-      { name: 'com.apple.quicktime.software', val: tags.software },
-      { name: 'com.apple.quicktime.camera.identifier', val: tags.cameraIdentifier || 'Back' },
-      { name: 'com.apple.quicktime.camera.lens_model', val: tags.lensModel },
-      { name: 'com.apple.quicktime.camera.focal_length.35mm_equivalent', val: tags.focalLength35mm },
+      { name: 'location.ISO6709', val: locationString },
       { name: 'com.apple.quicktime.make', val: tags.make },
+      { name: 'make', val: tags.make },
+      { name: 'com.apple.quicktime.model', val: tags.model },
+      { name: 'model', val: tags.model },
+      { name: 'com.apple.quicktime.software', val: tags.software },
+      { name: 'software', val: tags.software },
+      { name: 'com.apple.quicktime.creationdate', val: cDateISO },
+      { name: 'creationdate', val: cDateISO },
+      { name: 'com.apple.photos.captureMode', val: 'video' },
+      { name: 'com.apple.quicktime.camera.identifier', val: tags.cameraIdentifier || 'Back' },
+      { name: 'camera.identifier', val: tags.cameraIdentifier || 'Back' },
+      { name: 'com.apple.quicktime.camera.lens_model', val: tags.lensModel },
+      { name: 'camera.lens_model', val: tags.lensModel },
+      { name: 'com.apple.quicktime.camera.focal_length.35mm_equivalent', val: tags.focalLength35mm },
+      { name: 'camera.focal_length.35mm_equivalent', val: tags.focalLength35mm },
       { name: 'com.apple.quicktime.camera.iris_f_number', val: cleanFNumber || tags.fNumber },
+      { name: 'camera.iris_f_number', val: cleanFNumber || tags.fNumber },
       { name: 'com.apple.quicktime.camera.lens.iris.f-number', val: cleanFNumber || tags.fNumber },
-      { name: 'com.apple.quicktime.creationdate', val: cDateISO }
+      { name: 'camera.lens.iris.f-number', val: cleanFNumber || tags.fNumber }
     ].filter(item => item.val && String(item.val).trim().length > 0);
 
     return buildAppleMetaBoxFromKeyDefs(keyDefinitions);
@@ -813,11 +891,21 @@ const MP4Editor = (function () {
   function buildTrackMetaBox(tags) {
     const cleanFNumber = tags.fNumber ? String(tags.fNumber).replace(/^[fF]\/?/, '') : '';
     const keyDefinitions = [
+      { name: 'com.apple.quicktime.make', val: tags.make },
+      { name: 'make', val: tags.make },
+      { name: 'com.apple.quicktime.model', val: tags.model },
+      { name: 'model', val: tags.model },
       { name: 'com.apple.quicktime.camera.identifier', val: tags.cameraIdentifier || 'Back' },
+      { name: 'camera.identifier', val: tags.cameraIdentifier || 'Back' },
       { name: 'com.apple.quicktime.camera.lens_model', val: tags.lensModel },
+      { name: 'camera.lens_model', val: tags.lensModel },
       { name: 'com.apple.quicktime.camera.focal_length.35mm_equivalent', val: tags.focalLength35mm },
+      { name: 'camera.focal_length.35mm_equivalent', val: tags.focalLength35mm },
       { name: 'com.apple.quicktime.camera.iris_f_number', val: cleanFNumber || tags.fNumber },
-      { name: 'com.apple.quicktime.camera.lens.iris.f-number', val: cleanFNumber || tags.fNumber }
+      { name: 'camera.iris_f_number', val: cleanFNumber || tags.fNumber },
+      { name: 'com.apple.quicktime.camera.lens.iris.f-number', val: cleanFNumber || tags.fNumber },
+      { name: 'camera.lens.iris.f-number', val: cleanFNumber || tags.fNumber },
+      { name: 'com.apple.photos.captureMode', val: 'video' }
     ].filter(item => item.val && String(item.val).trim().length > 0);
 
     return buildAppleMetaBoxFromKeyDefs(keyDefinitions);
@@ -1463,15 +1551,49 @@ const MP4Editor = (function () {
         adjustChunkOffsets(newMoov, delta);
       }
 
-      // 9. Assemble final file slices as a Blob (Instant, lossless, 0 extra RAM)
+      // 9. Check if Apple preset or QuickTime compatibility requested
+      const isApple = (tags.make && /apple/i.test(tags.make)) || (tags.model && /iphone|ipad/i.test(tags.model)) || !!updates.dolbyVision || (updates.outputFormat === 'mov');
+
+      // If Apple/QuickTime format, ensure ftyp box starts with 'qt  ' major brand
+      let updatedFtyp = null;
+      const ftypBox = topBoxes.find(b => b.type === 'ftyp');
+      if (isApple && ftypBox && ftypBox.offset === 0 && ftypBox.size >= 20) {
+        const ftypRaw = await readFileSlice(file, 0, ftypBox.size);
+        const ftypBytes = new Uint8Array(ftypRaw.slice(0));
+        const ftypDv = new DataView(ftypBytes.buffer);
+        // Write major brand 'qt  '
+        writeASCII(ftypDv, 8, 'qt  ');
+        // Write minor version 0
+        writeUint32(ftypDv, 12, 0);
+        // Ensure compatible brand 1 is 'qt  '
+        writeASCII(ftypDv, 16, 'qt  ');
+        updatedFtyp = ftypBytes;
+      }
+
+      // Helper to slice bytes before moov taking updatedFtyp into account
+      function getSliceBeforeMoov(start, end) {
+        if (start >= end) return [];
+        if (updatedFtyp && ftypBox && ftypBox.offset === 0) {
+          if (end <= ftypBox.size) {
+            return [updatedFtyp.subarray(start, end)];
+          } else if (start < ftypBox.size) {
+            return [updatedFtyp.subarray(start, ftypBox.size), file.slice(ftypBox.size, end)];
+          } else {
+            return [file.slice(start, end)];
+          }
+        }
+        return [file.slice(start, end)];
+      }
+
+      // 10. Assemble final file slices as a Blob (Instant, lossless, 0 extra RAM)
       const slices = [];
       if (moovBox.offset > 0) {
         if (existingC2PABox && existingC2PABox.offset < moovBox.offset) {
-          slices.push(file.slice(0, existingC2PABox.offset));
+          slices.push(...getSliceBeforeMoov(0, existingC2PABox.offset));
           if (newC2PABox) slices.push(newC2PABox);
-          slices.push(file.slice(existingC2PABox.offset + existingC2PABox.size, moovBox.offset));
+          slices.push(...getSliceBeforeMoov(existingC2PABox.offset + existingC2PABox.size, moovBox.offset));
         } else {
-          slices.push(file.slice(0, moovBox.offset));
+          slices.push(...getSliceBeforeMoov(0, moovBox.offset));
           if (newC2PABox && !existingC2PABox) slices.push(newC2PABox);
         }
       } else {
@@ -1491,7 +1613,8 @@ const MP4Editor = (function () {
         }
       }
 
-      return new Blob(slices, { type: file.type || 'video/mp4' });
+      const outMime = (isApple || updates.outputFormat === 'mov') ? 'video/quicktime' : (file.type || 'video/mp4');
+      return new Blob(slices, { type: outMime });
     }
   };
 })();
