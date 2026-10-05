@@ -52,6 +52,8 @@ document.addEventListener('DOMContentLoaded', () => {
   const lensModelInput = document.getElementById('lensModelInput');
   const focalLengthInput = document.getElementById('focalLengthInput');
   const fNumberInput = document.getElementById('fNumberInput');
+  const cameraIdentifierInput = document.getElementById('cameraIdentifierInput');
+  const dolbyVisionToggle = document.getElementById('dolbyVisionToggle');
   const devicePresetSelect = document.getElementById('devicePresetSelect');
 
   // Stream & Media Inspector specs
@@ -354,6 +356,8 @@ document.addEventListener('DOMContentLoaded', () => {
     lensModelInput.value = meta.tags.lensModel || '';
     focalLengthInput.value = meta.tags.focalLength35mm || '';
     fNumberInput.value = meta.tags.fNumber || '';
+    if (cameraIdentifierInput) cameraIdentifierInput.value = meta.tags.cameraIdentifier || 'Back';
+    if (dolbyVisionToggle) dolbyVisionToggle.checked = !!(meta.stream && meta.stream.isDolbyVision);
 
     titleInput.value = meta.tags.title || '';
     artistInput.value = meta.tags.artist || '';
@@ -363,7 +367,13 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // Populate Stream & Media Inspector specs
     if (meta.stream) {
-      if (specCodec) specCodec.textContent = `${meta.stream.compressorName || 'Unknown'} (${meta.stream.videoCodec || 'hvc1'})`;
+      if (specCodec) {
+        let codecHtml = `${meta.stream.compressorName || 'Unknown'} (${meta.stream.videoCodec || 'hvc1'})`;
+        if (meta.stream.isDolbyVision) {
+          codecHtml += ` <span class="badge" style="background:#6366f1;color:#fff;font-size:0.65rem;font-weight:600;padding:2px 6px;border-radius:4px;margin-left:4px;">Dolby Vision</span>`;
+        }
+        specCodec.innerHTML = codecHtml;
+      }
       if (specBitDepth) specBitDepth.textContent = `${meta.stream.bitDepth || 24}-bit`;
       if (specFps) specFps.textContent = `${meta.stream.frameRate || 30} fps`;
       if (specCleanAperture) specCleanAperture.textContent = meta.stream.cleanAperture || `${meta.width}x${meta.height}`;
@@ -577,7 +587,9 @@ document.addEventListener('DOMContentLoaded', () => {
       software: '26.6.2',
       lensModel: 'iPhone 17 back camera 5.96mm f/1.6',
       focalLength35mm: '26',
-      fNumber: 'F1.60',
+      fNumber: '1.6',
+      cameraIdentifier: 'Back',
+      dolbyVision: true,
       horizontalAccuracy: '10.84'
     },
     'iphone16promax': {
@@ -586,7 +598,9 @@ document.addEventListener('DOMContentLoaded', () => {
       software: '18.1',
       lensModel: 'iPhone 16 Pro Max back camera 6.765mm f/1.78',
       focalLength35mm: '24',
-      fNumber: 'F1.78',
+      fNumber: '1.78',
+      cameraIdentifier: 'Back',
+      dolbyVision: true,
       horizontalAccuracy: '5.00'
     },
     'iphone15pro': {
@@ -595,7 +609,9 @@ document.addEventListener('DOMContentLoaded', () => {
       software: 'iOS 17.5.1',
       lensModel: 'iPhone 15 Pro back camera 6.765mm f/1.78',
       focalLength35mm: '24',
-      fNumber: 'F1.78',
+      fNumber: '1.78',
+      cameraIdentifier: 'Back',
+      dolbyVision: true,
       horizontalAccuracy: '5.00'
     },
     's24ultra': {
@@ -604,7 +620,9 @@ document.addEventListener('DOMContentLoaded', () => {
       software: 'S928BXXU1AXCA',
       lensModel: 'Galaxy S24 Ultra 200MP Wide Lens 6.3mm f/1.7',
       focalLength35mm: '23',
-      fNumber: 'F1.70',
+      fNumber: '1.7',
+      cameraIdentifier: 'Back',
+      dolbyVision: false,
       horizontalAccuracy: '4.50'
     },
     'pixel9pro': {
@@ -613,7 +631,9 @@ document.addEventListener('DOMContentLoaded', () => {
       software: 'Android 15 (AP3A.240905.015)',
       lensModel: 'Pixel 9 Pro back camera 6.9mm f/1.68',
       focalLength35mm: '25',
-      fNumber: 'F1.68',
+      fNumber: '1.68',
+      cameraIdentifier: 'Back',
+      dolbyVision: false,
       horizontalAccuracy: '4.00'
     },
     'sonya7s3': {
@@ -622,7 +642,9 @@ document.addEventListener('DOMContentLoaded', () => {
       software: 'Ver.3.00',
       lensModel: 'FE 24-70mm F2.8 GM II',
       focalLength35mm: '35',
-      fNumber: 'F2.80',
+      fNumber: '2.8',
+      cameraIdentifier: 'Back',
+      dolbyVision: false,
       horizontalAccuracy: '1.50'
     },
     'canonr5': {
@@ -631,7 +653,9 @@ document.addEventListener('DOMContentLoaded', () => {
       software: 'Firmware 2.0.0',
       lensModel: 'RF24-70mm F2.8 L IS USM',
       focalLength35mm: '50',
-      fNumber: 'F2.80',
+      fNumber: '2.8',
+      cameraIdentifier: 'Back',
+      dolbyVision: false,
       horizontalAccuracy: '1.50'
     },
     'djimini4': {
@@ -640,7 +664,9 @@ document.addEventListener('DOMContentLoaded', () => {
       software: 'v01.00.0300',
       lensModel: 'DJI FC3582 24mm f/1.7',
       focalLength35mm: '24',
-      fNumber: 'F1.70',
+      fNumber: '1.7',
+      cameraIdentifier: 'Back',
+      dolbyVision: false,
       horizontalAccuracy: '0.80'
     },
     'gopro12': {
@@ -649,7 +675,9 @@ document.addEventListener('DOMContentLoaded', () => {
       software: 'HD12.01.01.20',
       lensModel: 'GoPro Max Lens Mod 2.0 12mm f/2.5',
       focalLength35mm: '12',
-      fNumber: 'F2.50',
+      fNumber: '2.5',
+      cameraIdentifier: 'Back',
+      dolbyVision: false,
       horizontalAccuracy: '3.00'
     }
   };
@@ -664,6 +692,12 @@ document.addEventListener('DOMContentLoaded', () => {
       lensModelInput.value = preset.lensModel || '';
       focalLengthInput.value = preset.focalLength35mm || '';
       fNumberInput.value = preset.fNumber || '';
+      if (cameraIdentifierInput) {
+        cameraIdentifierInput.value = preset.cameraIdentifier || 'Back';
+      }
+      if (dolbyVisionToggle) {
+        dolbyVisionToggle.checked = !!preset.dolbyVision;
+      }
       if (preset.horizontalAccuracy && !horizontalAccuracyInput.value) {
         horizontalAccuracyInput.value = preset.horizontalAccuracy;
       }
@@ -716,6 +750,8 @@ document.addEventListener('DOMContentLoaded', () => {
       lensModelInput.value = '';
       focalLengthInput.value = '';
       fNumberInput.value = '';
+      if (cameraIdentifierInput) cameraIdentifierInput.value = '';
+      if (dolbyVisionToggle) dolbyVisionToggle.checked = false;
       horizontalAccuracyInput.value = '';
 
       artistInput.value = '';
@@ -778,6 +814,7 @@ document.addEventListener('DOMContentLoaded', () => {
         lensModel: lensModelInput.value.trim(),
         focalLength35mm: focalLengthInput.value.trim(),
         fNumber: fNumberInput.value.trim(),
+        cameraIdentifier: cameraIdentifierInput ? cameraIdentifierInput.value.trim() : 'Back',
         horizontalAccuracy: horizontalAccuracyInput.value.trim()
       };
 
@@ -786,6 +823,7 @@ document.addEventListener('DOMContentLoaded', () => {
         modifyDate: mDate,
         location,
         tags,
+        dolbyVision: dolbyVisionToggle ? dolbyVisionToggle.checked : false,
         rotation: userChangedRotation ? selectedRotation : undefined,
         c2pa: activeC2PA,
         stripC2PA: stripC2PAFlag,
