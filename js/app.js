@@ -589,7 +589,6 @@ document.addEventListener('DOMContentLoaded', () => {
       focalLength35mm: '26',
       fNumber: '1.6',
       cameraIdentifier: 'Back',
-      dolbyVision: true,
       horizontalAccuracy: '10.84'
     },
     'iphone16promax': {
@@ -600,7 +599,6 @@ document.addEventListener('DOMContentLoaded', () => {
       focalLength35mm: '24',
       fNumber: '1.78',
       cameraIdentifier: 'Back',
-      dolbyVision: true,
       horizontalAccuracy: '5.00'
     },
     'iphone15pro': {
@@ -611,7 +609,6 @@ document.addEventListener('DOMContentLoaded', () => {
       focalLength35mm: '24',
       fNumber: '1.78',
       cameraIdentifier: 'Back',
-      dolbyVision: true,
       horizontalAccuracy: '5.00'
     },
     's24ultra': {
@@ -695,11 +692,11 @@ document.addEventListener('DOMContentLoaded', () => {
       if (cameraIdentifierInput) {
         cameraIdentifierInput.value = preset.cameraIdentifier || 'Back';
       }
-      if (dolbyVisionToggle) {
-        dolbyVisionToggle.checked = !!preset.dolbyVision;
-      }
       if (preset.horizontalAccuracy && !horizontalAccuracyInput.value) {
         horizontalAccuracyInput.value = preset.horizontalAccuracy;
+      }
+      if (preset.make === 'Apple' && document.getElementById('exportFormatSelect')) {
+        document.getElementById('exportFormatSelect').value = 'mov';
       }
       showToast(`Applied preset: ${preset.model}`, 'info');
     }
@@ -818,12 +815,16 @@ document.addEventListener('DOMContentLoaded', () => {
         horizontalAccuracy: horizontalAccuracyInput.value.trim()
       };
 
+      const exportFormatSelect = document.getElementById('exportFormatSelect');
+      const isApple = (tags.make && /apple/i.test(tags.make)) || (tags.model && /iphone|ipad/i.test(tags.model));
+      const chosenFormat = exportFormatSelect ? exportFormatSelect.value : (isApple ? 'mov' : 'mp4');
+
       const updates = {
         creationDate: cDate,
         modifyDate: mDate,
         location,
         tags,
-        dolbyVision: dolbyVisionToggle ? dolbyVisionToggle.checked : false,
+        outputFormat: chosenFormat,
         rotation: userChangedRotation ? selectedRotation : undefined,
         c2pa: activeC2PA,
         stripC2PA: stripC2PAFlag,
@@ -839,7 +840,7 @@ document.addEventListener('DOMContentLoaded', () => {
       const originalName = currentFile.name;
       const lastDot = originalName.lastIndexOf('.');
       const baseName = lastDot !== -1 ? originalName.slice(0, lastDot) : originalName;
-      const ext = lastDot !== -1 ? originalName.slice(lastDot) : '.mp4';
+      const ext = chosenFormat === 'mov' ? '.mov' : '.mp4';
       const downloadName = `${baseName}_edited${ext}`;
 
       const downloadUrl = URL.createObjectURL(editedBlob);
