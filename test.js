@@ -93,7 +93,28 @@ const hdlrPayload = new Uint8Array(24);
 const hdlrDv = new DataView(hdlrPayload.buffer);
 hdlrDv.setUint32(8, 0x76696465, false); // 'vide'
 const hdlrBox = createBox('hdlr', hdlrPayload);
-const mdiaBox = createBox('mdia', hdlrBox);
+
+// Build synthetic stsd with visual sample entry ('hvc1')
+const sampleEntryPayload = new Uint8Array(78);
+const seDv = new DataView(sampleEntryPayload.buffer);
+seDv.setUint16(24, 1920, false); // width at offset 32 (8 header + 24)
+seDv.setUint16(26, 1080, false); // height at offset 34 (8 header + 26)
+seDv.setUint8(42, 4); // compressor name len at offset 50 (8 header + 42)
+for (let i = 0; i < 4; i++) seDv.setUint8(43 + i, 'HEVC'.charCodeAt(i));
+const sampleEntryBox = createBox('hvc1', sampleEntryPayload);
+
+const stsdPayload = new Uint8Array(8 + sampleEntryBox.length);
+new DataView(stsdPayload.buffer).setUint32(4, 1, false); // entry count: 1
+stsdPayload.set(sampleEntryBox, 8);
+const stsdBox = createBox('stsd', stsdPayload);
+
+const stblBox = createBox('stbl', stsdBox);
+const minfBox = createBox('minf', stblBox);
+
+const mdiaPayload = new Uint8Array(hdlrBox.length + minfBox.length);
+mdiaPayload.set(hdlrBox, 0);
+mdiaPayload.set(minfBox, hdlrBox.length);
+const mdiaBox = createBox('mdia', mdiaPayload);
 
 // Build trak box with tkhd + mdia
 const trakPayload = new Uint8Array(tkhdBox.length + mdiaBox.length);
@@ -257,11 +278,13 @@ async function runAsyncTests() {
       make: 'Apple',
       model: 'iPhone 17',
       software: '26.6.2',
+      cameraIdentifier: 'Back',
       lensModel: 'iPhone 17 back camera 5.96mm f/1.6',
       focalLength35mm: '26',
-      fNumber: 'F1.60',
+      fNumber: '1.6',
       horizontalAccuracy: '10.84'
     },
+    dolbyVision: true,
     location: {
       latitude: 17.5327,
       longitude: 78.3922,
@@ -279,10 +302,15 @@ async function runAsyncTests() {
   assert(metaIphone17.tags.make === 'Apple', 'iPhone 17 make is Apple');
   assert(metaIphone17.tags.model === 'iPhone 17', 'iPhone 17 model is iPhone 17');
   assert(metaIphone17.tags.software === '26.6.2', 'iPhone 17 software is 26.6.2');
+  assert(metaIphone17.tags.cameraIdentifier === 'Back', 'iPhone 17 camera identifier is Back');
   assert(metaIphone17.tags.lensModel === 'iPhone 17 back camera 5.96mm f/1.6', 'iPhone 17 lens model parsed');
   assert(metaIphone17.tags.focalLength35mm === '26', 'iPhone 17 focal length 35mm parsed as 26');
-  assert(metaIphone17.tags.fNumber === 'F1.60', 'iPhone 17 F-number parsed as F1.60');
+  assert(metaIphone17.tags.fNumber === '1.6', 'iPhone 17 F-number parsed as 1.6');
   assert(metaIphone17.tags.horizontalAccuracy === '10.84', 'iPhone 17 horizontal accuracy parsed as 10.84');
+  assert(metaIphone17.stream.videoCodec === 'dvh1', 'Dolby Vision FourCC is dvh1');
+  assert(metaIphone17.stream.compressorName === 'HEVC', 'Compressor name is HEVC');
+  assert(metaIphone17.stream.isDolbyVision === true, 'Stream detected as Dolby Vision');
+  assert(metaIphone17.stream.dolbyVisionProfile === 'Profile 8.4', 'Dolby Vision profile is Profile 8.4');
   assert(metaIphone17.location !== null, 'iPhone 17 location parsed');
   assert(Math.abs(metaIphone17.location.latitude - 17.5327) < 0.001, 'iPhone 17 latitude match');
 
@@ -311,8 +339,37 @@ async function runAsyncTests() {
     o += bSize;
   }
   assert(foundMeta, 'QuickTime meta box present in moov');
+
+  // Verify track-level trak.meta box inside video trak
+  let foundTrackMeta = false;
+  let to = 8;
+  while (to + 8 <= blobIphone17.parts[1].length) {
+    const bSize = moovDv.getUint32(to, false);
+    const bType = String.fromCharCode(moovDv.getUint8(to+4), moovDv.getUint8(to+5), moovDv.getUint8(to+6), moovDv.getUint8(to+7));
+    if (bType === 'trak') {
+      // Look inside trak for meta
+      let insideTrak = to + 8;
+      while (insideTrak + 8 <= to + bSize) {
+        const subSz = moovDv.getUint32(insideTrak, false);
+        const subTp = String.fromCharCode(moovDv.getUint8(insideTrak+4), moovDv.getUint8(insideTrak+5), moovDv.getUint8(insideTrak+6), moovDv.getUint8(insideTrak+7));
+        if (subTp === 'meta') {
+          foundTrackMeta = true;
+          const trkHdlrSize = moovDv.getUint32(insideTrak + 8, false);
+          assert(trkHdlrSize === 34, 'Track-level meta hdlr box is exactly 34 bytes');
+          break;
+        }
+        if (subSz < 8) break;
+        insideTrak += subSz;
+      }
+      break;
+    }
+    if (bSize < 8) break;
+    to += bSize;
+  }
+  assert(foundTrackMeta, 'Track-level meta box present in video track (trak.meta)');
+
   print('  ✓ QuickTime binary layout strictly conforms to Apple AVFoundation specification!');
-  print('  ✓ iPhone 17 camera & lens optics roundtrip verified successfully!');
+  print('  ✓ iPhone 17 camera & lens optics (track + movie) and Dolby Vision roundtrip verified successfully!');
 }
 
 load('js/c2pa-engine.js');
