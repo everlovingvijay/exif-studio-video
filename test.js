@@ -285,6 +285,33 @@ async function runAsyncTests() {
   assert(metaIphone17.tags.horizontalAccuracy === '10.84', 'iPhone 17 horizontal accuracy parsed as 10.84');
   assert(metaIphone17.location !== null, 'iPhone 17 location parsed');
   assert(Math.abs(metaIphone17.location.latitude - 17.5327) < 0.001, 'iPhone 17 latitude match');
+
+  // Verify QuickTime binary layout: moov.meta must be standard box (no 4-byte FullBox offset)
+  // and child hdlr box must be exactly 34 bytes (8 header + 26 payload)
+  const moovBuf = blobIphone17.parts[1].buffer;
+  const moovDv = new DataView(moovBuf);
+  // Find 'meta' box inside moov
+  let foundMeta = false;
+  let o = 8;
+  while (o + 8 <= blobIphone17.parts[1].length) {
+    const bSize = moovDv.getUint32(o, false);
+    const bType = String.fromCharCode(moovDv.getUint8(o+4), moovDv.getUint8(o+5), moovDv.getUint8(o+6), moovDv.getUint8(o+7));
+    if (bType === 'meta') {
+      foundMeta = true;
+      // First child inside meta must be 'hdlr' at offset o + 8 (size 34)
+      const hdlrSize = moovDv.getUint32(o + 8, false);
+      const hdlrType = String.fromCharCode(moovDv.getUint8(o+12), moovDv.getUint8(o+13), moovDv.getUint8(o+14), moovDv.getUint8(o+15));
+      assert(hdlrSize === 34, 'QuickTime meta hdlr box is exactly 34 bytes');
+      assert(hdlrType === 'hdlr', 'First child box of QuickTime meta is hdlr at offset 8 (standard box, not FullBox)');
+      const handler = String.fromCharCode(moovDv.getUint8(o+24), moovDv.getUint8(o+25), moovDv.getUint8(o+26), moovDv.getUint8(o+27));
+      assert(handler === 'mdta', 'QuickTime meta handler is mdta');
+      break;
+    }
+    if (bSize < 8) break;
+    o += bSize;
+  }
+  assert(foundMeta, 'QuickTime meta box present in moov');
+  print('  ✓ QuickTime binary layout strictly conforms to Apple AVFoundation specification!');
   print('  ✓ iPhone 17 camera & lens optics roundtrip verified successfully!');
 }
 

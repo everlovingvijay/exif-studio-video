@@ -1369,6 +1369,31 @@ const MP4Editor = (function () {
   }
 
   /**
+   * Formats a Date or date string to ISO 8601 with local timezone offset (+HH:MM)
+   * as expected by Apple QuickTime and AVFoundation (e.g. 2026-09-29T15:18:00+05:30).
+   */
+  function formatISOWithTimezone(d) {
+    if (!d) return '';
+    if (typeof d === 'string' && d.includes('T') && (d.endsWith('Z') || /[+-]\d{2}:\d{2}$/.test(d))) {
+      return d;
+    }
+    const date = (d instanceof Date) ? d : new Date(d);
+    if (isNaN(date.getTime())) return '';
+    const pad = (n) => String(Math.floor(Math.abs(n))).padStart(2, '0');
+    const year = date.getFullYear();
+    const month = pad(date.getMonth() + 1);
+    const day = pad(date.getDate());
+    const hours = pad(date.getHours());
+    const minutes = pad(date.getMinutes());
+    const seconds = pad(date.getSeconds());
+    const tzOffset = -date.getTimezoneOffset(); // in minutes
+    const sign = tzOffset >= 0 ? '+' : '-';
+    const tzHours = pad(Math.floor(Math.abs(tzOffset) / 60));
+    const tzMinutes = pad(Math.abs(tzOffset) % 60);
+    return `${year}-${month}-${day}T${hours}:${minutes}:${seconds}${sign}${tzHours}:${tzMinutes}`;
+  }
+
+  /**
    * Reads a slice of a File as an ArrayBuffer
    */
   async function readFileSlice(file, start, end) {
@@ -1924,20 +1949,33 @@ const MP4Editor = (function () {
    */
   function buildQuickTimeMetaBox(tags, locationString, cDateISO) {
     const keyDefinitions = [
-      { name: 'com.apple.quicktime.make', val: tags.make },
+      { name: 'com.apple.quicktime.location.accuracy.horizontal', val: tags.horizontalAccuracy },
+      { name: 'com.apple.quicktime.location.ISO6709', val: locationString },
       { name: 'com.apple.quicktime.model', val: tags.model },
       { name: 'com.apple.quicktime.software', val: tags.software },
-      { name: 'com.apple.quicktime.creationdate', val: cDateISO },
-      { name: 'com.apple.quicktime.location.ISO6709', val: locationString },
-      { name: 'com.apple.quicktime.location.accuracy.horizontal', val: tags.horizontalAccuracy },
       { name: 'com.apple.quicktime.camera.lens_model', val: tags.lensModel },
       { name: 'com.apple.quicktime.camera.focal_length.35mm_equivalent', val: tags.focalLength35mm },
-      { name: 'com.apple.quicktime.camera.iris_f_number', val: tags.fNumber }
+      { name: 'com.apple.quicktime.make', val: tags.make },
+      { name: 'com.apple.quicktime.camera.iris_f_number', val: tags.fNumber },
+      { name: 'com.apple.quicktime.creationdate', val: cDateISO }
     ].filter(item => item.val && String(item.val).trim().length > 0);
 
     if (keyDefinitions.length === 0) return null;
 
-    // 1. Build 'keys' box
+    // 1. Build 'hdlr' box with handler 'mdta' (34 bytes total: 8 byte header + 26 byte payload)
+    const hdlrPayload = new Uint8Array(26);
+    const hdlrView = new DataView(hdlrPayload.buffer);
+    writeUint32(hdlrView, 0, 0); // version & flags
+    writeUint32(hdlrView, 4, 0); // component type
+    writeASCII(hdlrView, 8, 'mdta'); // handler type 'mdta'
+    writeUint32(hdlrView, 12, 0); // manufacturer 0
+    writeUint32(hdlrView, 16, 0); // flags
+    writeUint32(hdlrView, 20, 0); // flags mask
+    hdlrPayload[24] = 0; // component name (empty)
+    hdlrPayload[25] = 0;
+    const hdlrBox = createBox('hdlr', hdlrPayload);
+
+    // 2. Build 'keys' box
     let keysPayloadSize = 8; // 4 bytes version/flags + 4 bytes entry count
     for (const item of keyDefinitions) {
       const keyBytes = encodeUTF8(item.name);
@@ -1959,22 +1997,19 @@ const MP4Editor = (function () {
       keyOffset += entrySize;
     }
 
-    // 2. Build 'ilst' box
+    // 3. Build 'ilst' box
     const ilstItems = [];
     for (let i = 0; i < keyDefinitions.length; i++) {
       const valStr = String(keyDefinitions[i].val).trim();
       const valBytes = encodeUTF8(valStr);
-      // Data box inside item: size (4), 'data' (4), type 1 (4), locale 0 (4), valBytes
+      // Data box inside item: size (4), 'data' (4), type 1 (4), locale 0x555315c7 (4), valBytes
       const dataSize = 16 + valBytes.length;
       const dataBox = new Uint8Array(dataSize);
       const dv = new DataView(dataBox.buffer);
       writeUint32(dv, 0, dataSize);
       writeASCII(dv, 4, 'data');
-      dv.setUint8(8, 0); // version
-      dv.setUint8(9, 0);
-      dv.setUint8(10, 0);
-      dv.setUint8(11, 1); // type 1: UTF-8 text
-      writeUint32(dv, 12, 0); // locale
+      writeUint32(dv, 8, 1); // type 1: UTF-8 text
+      writeUint32(dv, 12, 0x555315c7); // locale: US / English
       dataBox.set(valBytes, 16);
 
       // Item box: size (4), tag (4 bytes 1-based index: i + 1), dataBox
@@ -1998,21 +2033,10 @@ const MP4Editor = (function () {
       ilstOff += b.length;
     }
 
-    // 3. Build 'hdlr' box with handler 'mdta'
-    const hdlrPayload = new Uint8Array(25);
-    const hdlrView = new DataView(hdlrPayload.buffer);
-    writeUint32(hdlrView, 0, 0);
-    writeUint32(hdlrView, 4, 0);
-    writeASCII(hdlrView, 8, 'mdta');
-    writeASCII(hdlrView, 12, 'appl');
-    writeUint32(hdlrView, 16, 0);
-    writeUint32(hdlrView, 20, 0);
-    hdlrPayload[24] = 0;
-    const hdlrBox = createBox('hdlr', hdlrPayload);
-
-    // 4. Build 'meta' box (FullBox: 4 bytes version/flags = 0)
-    const metaPayload = new Uint8Array(4 + hdlrBox.length + keysBox.length + ilstBox.length);
-    let metaOff = 4;
+    // 4. Build 'meta' box (Standard box in QuickTime .mov, NOT FullBox!)
+    // AVFoundation expects 'hdlr' immediately at byte 8 of 'meta'.
+    const metaPayload = new Uint8Array(hdlrBox.length + keysBox.length + ilstBox.length);
+    let metaOff = 0;
     metaPayload.set(hdlrBox, metaOff); metaOff += hdlrBox.length;
     metaPayload.set(keysBox, metaOff); metaOff += keysBox.length;
     metaPayload.set(ilstBox, metaOff); metaOff += ilstBox.length;
@@ -2286,7 +2310,7 @@ const MP4Editor = (function () {
       }
 
       const tags = updates.scrubAll ? {} : (updates.tags || {});
-      const cDateISO = (!updates.scrubAll && updates.creationDate) ? new Date(updates.creationDate).toISOString() : '';
+      const cDateISO = (!updates.scrubAll && updates.creationDate) ? formatISOWithTimezone(updates.creationDate) : '';
       const newUdta = buildUdtaBox(tags, locationString);
       const newMoovMeta = updates.scrubAll ? null : buildQuickTimeMetaBox(tags, locationString, cDateISO);
 
