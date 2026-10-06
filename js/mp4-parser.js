@@ -967,13 +967,24 @@ const MP4Editor = (function () {
     let isVideo = false;
     let trackWidth = 0;
     let trackHeight = 0;
-    if (tkhdChild) {
+    if (tkhdChild && tkhdChild.size >= 84) {
       const tv = dv.getUint8(tkhdChild.offset + 8);
+      // Volume check: Audio tracks strictly have volume = 0x0100 (1.0), video tracks have volume = 0
+      const volOff = tkhdChild.offset + (tv === 1 ? 56 : 44);
+      if (volOff + 2 <= tkhdChild.offset + tkhdChild.size) {
+        const volume = dv.getUint16(volOff, false);
+        if (volume > 0) {
+          // Audio track: strictly return unmodified immediately!
+          return trakBytes;
+        }
+      }
       const wOff = tkhdChild.offset + (tv === 1 ? 96 : 84);
       const hOff = tkhdChild.offset + (tv === 1 ? 100 : 88);
-      trackWidth = dv.getUint32(wOff, false) >> 16;
-      trackHeight = dv.getUint32(hOff, false) >> 16;
-      if (trackWidth > 0 && trackHeight > 0) isVideo = true;
+      if (hOff + 4 <= tkhdChild.offset + tkhdChild.size) {
+        trackWidth = dv.getUint32(wOff, false) >> 16;
+        trackHeight = dv.getUint32(hOff, false) >> 16;
+        if (trackWidth > 0 && trackHeight > 0) isVideo = true;
+      }
     }
 
     const mdiaChild = children.find(c => c.type === 'mdia');
@@ -985,35 +996,36 @@ const MP4Editor = (function () {
         const mSz = mdiaDv.getUint32(mOff, false);
         const mTp = readASCII(mdiaDv, mOff + 4, 4);
         if (mTp === 'hdlr' && mSz >= 20) {
-          const hType = readASCII(mdiaDv, mOff + 16, 4);
+          const hType = readASCII(mdiaDv, mOff + 16, 4).toLowerCase();
           if (hType === 'vide') {
             isVideo = true;
-          } else if (hType === 'soun' || hType === 'hint' || hType === 'meta') {
-            isVideo = false;
-            break;
+          } else if (hType === 'soun' || hType === 'hint' || hType === 'meta' || hType === 'tmcd' || hType === 'subt' || hType === 'clcp' || hType === 'tx3g') {
+            // Audio or non-video track: strictly return unmodified immediately!
+            return trakBytes;
           }
         } else if (mTp === 'minf' && mSz >= 16) {
-          // If minf contains smhd (sound media header), this is definitely an audio track
           let subOff = mOff + 8;
           while (subOff + 8 <= mOff + mSz) {
             const subSz = mdiaDv.getUint32(subOff, false);
             const subTp = readASCII(mdiaDv, subOff + 4, 4);
-            if (subTp === 'smhd') {
-              isVideo = false;
-              break;
+            if (subTp === 'smhd' || subTp === 'hmhd' || subTp === 'nmhd') {
+              // Sound, hint, or null media header: strictly return unmodified immediately!
+              return trakBytes;
+            }
+            if (subTp === 'vmhd') {
+              isVideo = true;
             }
             if (subSz < 8) break;
             subOff += subSz;
           }
-          if (!isVideo) break;
         }
         if (mSz < 8) break;
         mOff += mSz;
       }
     }
 
-    // If not video track, return unmodified
-    if (!isVideo) return trakBytes;
+    // If not a video track with valid dimensions, return unmodified
+    if (!isVideo || trackWidth <= 0 || trackHeight <= 0) return trakBytes;
 
     // Filter out existing trak.meta
     const nonMetaChildren = children.filter(c => c.type !== 'meta');
@@ -1313,12 +1325,12 @@ const MP4Editor = (function () {
       const newUdta = buildUdtaBox(tags, locationString);
       const newMoovMeta = updates.scrubAll ? null : buildQuickTimeMetaBox(tags, locationString, cDateISO);
 
-      // 4. Process non-udta children (updating video track with track-level optics ONLY if QuickTime export)
+      // 4. Process non-udta children (updating video track with track-level optics)
       const processedChildren = [];
       const isMov = (updates.outputFormat === 'mov');
       for (const c of nonUdtaChildren) {
         const chunk = new Uint8Array(moovBuffer, c.offset, c.size);
-        if (isMov && c.type === 'trak') {
+        if (c.type === 'trak') {
           const updatedTrak = updateVideoTrakBox(chunk, tags, !!updates.scrubAll);
           processedChildren.push(updatedTrak);
         } else {
@@ -1453,3 +1465,4 @@ const MP4Editor = (function () {
 
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = MP4Editor;
+}
