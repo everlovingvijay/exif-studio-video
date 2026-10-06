@@ -695,9 +695,6 @@ document.addEventListener('DOMContentLoaded', () => {
       if (preset.horizontalAccuracy && !horizontalAccuracyInput.value) {
         horizontalAccuracyInput.value = preset.horizontalAccuracy;
       }
-      if (preset.make === 'Apple' && document.getElementById('exportFormatSelect')) {
-        document.getElementById('exportFormatSelect').value = 'mov';
-      }
       showToast(`Applied preset: ${preset.model}`, 'info');
     }
   });
@@ -816,8 +813,17 @@ document.addEventListener('DOMContentLoaded', () => {
       };
 
       const exportFormatSelect = document.getElementById('exportFormatSelect');
-      const isApple = (tags.make && /apple/i.test(tags.make)) || (tags.model && /iphone|ipad/i.test(tags.model));
-      const chosenFormat = exportFormatSelect ? exportFormatSelect.value : (isApple ? 'mov' : 'mp4');
+      const formatSetting = exportFormatSelect ? exportFormatSelect.value : 'auto';
+      const isOriginalMov = (currentFile && currentFile.name && currentFile.name.toLowerCase().endsWith('.mov'));
+      let chosenFormat = 'mp4';
+      if (formatSetting === 'mov') {
+        chosenFormat = 'mov';
+      } else if (formatSetting === 'mp4') {
+        chosenFormat = 'mp4';
+      } else {
+        // 'auto': strictly preserve original container so audio & stream codecs never glitch
+        chosenFormat = isOriginalMov ? 'mov' : 'mp4';
+      }
 
       const updates = {
         creationDate: cDate,
@@ -863,3 +869,4 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   });
 });
+ 
