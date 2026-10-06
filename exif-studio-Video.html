@@ -874,8 +874,9 @@
                   <div style="display: flex; align-items: center; gap: 0.75rem; flex-wrap: wrap;">
                     <label class="form-label" for="exportFormatSelect" style="margin: 0; font-size: 0.8rem;">Export Container Format:</label>
                     <select class="input-text" id="exportFormatSelect" style="width: auto; padding: 4px 8px; font-size: 0.8rem;">
-                      <option value="mov">QuickTime (.mov) — Best for iPhone & Apple Photos</option>
-                      <option value="mp4">MPEG-4 (.mp4) — Standard Web & Android</option>
+                      <option value="auto" selected>Auto (Match Input File) — Preserves Audio & Video</option>
+                      <option value="mp4">MPEG-4 (.mp4) — Universal Web & Mobile</option>
+                      <option value="mov">QuickTime (.mov) — Apple QuickTime</option>
                     </select>
                   </div>
                   <div style="font-size: 0.75rem; color: var(--text-muted); margin-top: 0.5rem; line-height: 1.4;">
@@ -2360,8 +2361,26 @@ const MP4Editor = (function () {
         const mTp = readASCII(mdiaDv, mOff + 4, 4);
         if (mTp === 'hdlr' && mSz >= 20) {
           const hType = readASCII(mdiaDv, mOff + 16, 4);
-          if (hType === 'vide') isVideo = true;
-          else if (hType === 'soun' || hType === 'hint' || hType === 'meta') isVideo = false;
+          if (hType === 'vide') {
+            isVideo = true;
+          } else if (hType === 'soun' || hType === 'hint' || hType === 'meta') {
+            isVideo = false;
+            break;
+          }
+        } else if (mTp === 'minf' && mSz >= 16) {
+          // If minf contains smhd (sound media header), this is definitely an audio track
+          let subOff = mOff + 8;
+          while (subOff + 8 <= mOff + mSz) {
+            const subSz = mdiaDv.getUint32(subOff, false);
+            const subTp = readASCII(mdiaDv, subOff + 4, 4);
+            if (subTp === 'smhd') {
+              isVideo = false;
+              break;
+            }
+            if (subSz < 8) break;
+            subOff += subSz;
+          }
+          if (!isVideo) break;
         }
         if (mSz < 8) break;
         mOff += mSz;
@@ -2669,11 +2688,12 @@ const MP4Editor = (function () {
       const newUdta = buildUdtaBox(tags, locationString);
       const newMoovMeta = updates.scrubAll ? null : buildQuickTimeMetaBox(tags, locationString, cDateISO);
 
-      // 4. Process non-udta children (updating video track with track-level optics)
+      // 4. Process non-udta children (updating video track with track-level optics ONLY if QuickTime export)
       const processedChildren = [];
+      const isMov = (updates.outputFormat === 'mov');
       for (const c of nonUdtaChildren) {
         const chunk = new Uint8Array(moovBuffer, c.offset, c.size);
-        if (c.type === 'trak') {
+        if (isMov && c.type === 'trak') {
           const updatedTrak = updateVideoTrakBox(chunk, tags, !!updates.scrubAll);
           processedChildren.push(updatedTrak);
         } else {
@@ -2743,7 +2763,6 @@ const MP4Editor = (function () {
 
       // 9. If output format is QuickTime (.mov), ensure ftyp box starts with 'qt  ' major brand
       let updatedFtyp = null;
-      const isMov = (updates.outputFormat === 'mov');
       const ftypBox = topBoxes.find(b => b.type === 'ftyp');
       if (isMov && ftypBox && ftypBox.offset === 0 && ftypBox.size >= 20) {
         const ftypRaw = await readFileSlice(file, 0, ftypBox.size);
@@ -3512,9 +3531,6 @@ document.addEventListener('DOMContentLoaded', () => {
       if (preset.horizontalAccuracy && !horizontalAccuracyInput.value) {
         horizontalAccuracyInput.value = preset.horizontalAccuracy;
       }
-      if (preset.make === 'Apple' && document.getElementById('exportFormatSelect')) {
-        document.getElementById('exportFormatSelect').value = 'mov';
-      }
       showToast(`Applied preset: ${preset.model}`, 'info');
     }
   });
@@ -3633,8 +3649,17 @@ document.addEventListener('DOMContentLoaded', () => {
       };
 
       const exportFormatSelect = document.getElementById('exportFormatSelect');
-      const isApple = (tags.make && /apple/i.test(tags.make)) || (tags.model && /iphone|ipad/i.test(tags.model));
-      const chosenFormat = exportFormatSelect ? exportFormatSelect.value : (isApple ? 'mov' : 'mp4');
+      const formatSetting = exportFormatSelect ? exportFormatSelect.value : 'auto';
+      const isOriginalMov = (currentFile && currentFile.name && currentFile.name.toLowerCase().endsWith('.mov'));
+      let chosenFormat = 'mp4';
+      if (formatSetting === 'mov') {
+        chosenFormat = 'mov';
+      } else if (formatSetting === 'mp4') {
+        chosenFormat = 'mp4';
+      } else {
+        // 'auto': strictly preserve original container so audio & stream codecs never glitch
+        chosenFormat = isOriginalMov ? 'mov' : 'mp4';
+      }
 
       const updates = {
         creationDate: cDate,
@@ -3684,3 +3709,4 @@ document.addEventListener('DOMContentLoaded', () => {
   </script>
 </body>
 </html>
+ 
