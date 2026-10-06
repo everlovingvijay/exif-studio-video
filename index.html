@@ -874,9 +874,9 @@
                   <div style="display: flex; align-items: center; gap: 0.75rem; flex-wrap: wrap;">
                     <label class="form-label" for="exportFormatSelect" style="margin: 0; font-size: 0.8rem;">Export Container Format:</label>
                     <select class="input-text" id="exportFormatSelect" style="width: auto; padding: 4px 8px; font-size: 0.8rem;">
-                      <option value="auto" selected>Auto (Match Input File) — Preserves Audio & Video</option>
-                      <option value="mp4">MPEG-4 (.mp4) — Universal Web & Mobile</option>
-                      <option value="mov">QuickTime (.mov) — Apple QuickTime</option>
+                      <option value="mov" selected>QuickTime (.mov) — Best for iPhone &amp; Apple Photos</option>
+                      <option value="mp4">MPEG-4 (.mp4) — Universal Web &amp; Android</option>
+                      <option value="auto">Auto (Match Input Container)</option>
                     </select>
                   </div>
                   <div style="font-size: 0.75rem; color: var(--text-muted); margin-top: 0.5rem; line-height: 1.4;">
@@ -2342,13 +2342,24 @@ const MP4Editor = (function () {
     let isVideo = false;
     let trackWidth = 0;
     let trackHeight = 0;
-    if (tkhdChild) {
+    if (tkhdChild && tkhdChild.size >= 84) {
       const tv = dv.getUint8(tkhdChild.offset + 8);
+      // Volume check: Audio tracks strictly have volume = 0x0100 (1.0), video tracks have volume = 0
+      const volOff = tkhdChild.offset + (tv === 1 ? 56 : 44);
+      if (volOff + 2 <= tkhdChild.offset + tkhdChild.size) {
+        const volume = dv.getUint16(volOff, false);
+        if (volume > 0) {
+          // Audio track: strictly return unmodified immediately!
+          return trakBytes;
+        }
+      }
       const wOff = tkhdChild.offset + (tv === 1 ? 96 : 84);
       const hOff = tkhdChild.offset + (tv === 1 ? 100 : 88);
-      trackWidth = dv.getUint32(wOff, false) >> 16;
-      trackHeight = dv.getUint32(hOff, false) >> 16;
-      if (trackWidth > 0 && trackHeight > 0) isVideo = true;
+      if (hOff + 4 <= tkhdChild.offset + tkhdChild.size) {
+        trackWidth = dv.getUint32(wOff, false) >> 16;
+        trackHeight = dv.getUint32(hOff, false) >> 16;
+        if (trackWidth > 0 && trackHeight > 0) isVideo = true;
+      }
     }
 
     const mdiaChild = children.find(c => c.type === 'mdia');
@@ -2360,35 +2371,36 @@ const MP4Editor = (function () {
         const mSz = mdiaDv.getUint32(mOff, false);
         const mTp = readASCII(mdiaDv, mOff + 4, 4);
         if (mTp === 'hdlr' && mSz >= 20) {
-          const hType = readASCII(mdiaDv, mOff + 16, 4);
+          const hType = readASCII(mdiaDv, mOff + 16, 4).toLowerCase();
           if (hType === 'vide') {
             isVideo = true;
-          } else if (hType === 'soun' || hType === 'hint' || hType === 'meta') {
-            isVideo = false;
-            break;
+          } else if (hType === 'soun' || hType === 'hint' || hType === 'meta' || hType === 'tmcd' || hType === 'subt' || hType === 'clcp' || hType === 'tx3g') {
+            // Audio or non-video track: strictly return unmodified immediately!
+            return trakBytes;
           }
         } else if (mTp === 'minf' && mSz >= 16) {
-          // If minf contains smhd (sound media header), this is definitely an audio track
           let subOff = mOff + 8;
           while (subOff + 8 <= mOff + mSz) {
             const subSz = mdiaDv.getUint32(subOff, false);
             const subTp = readASCII(mdiaDv, subOff + 4, 4);
-            if (subTp === 'smhd') {
-              isVideo = false;
-              break;
+            if (subTp === 'smhd' || subTp === 'hmhd' || subTp === 'nmhd') {
+              // Sound, hint, or null media header: strictly return unmodified immediately!
+              return trakBytes;
+            }
+            if (subTp === 'vmhd') {
+              isVideo = true;
             }
             if (subSz < 8) break;
             subOff += subSz;
           }
-          if (!isVideo) break;
         }
         if (mSz < 8) break;
         mOff += mSz;
       }
     }
 
-    // If not video track, return unmodified
-    if (!isVideo) return trakBytes;
+    // If not a video track with valid dimensions, return unmodified
+    if (!isVideo || trackWidth <= 0 || trackHeight <= 0) return trakBytes;
 
     // Filter out existing trak.meta
     const nonMetaChildren = children.filter(c => c.type !== 'meta');
@@ -2688,12 +2700,12 @@ const MP4Editor = (function () {
       const newUdta = buildUdtaBox(tags, locationString);
       const newMoovMeta = updates.scrubAll ? null : buildQuickTimeMetaBox(tags, locationString, cDateISO);
 
-      // 4. Process non-udta children (updating video track with track-level optics ONLY if QuickTime export)
+      // 4. Process non-udta children (updating video track with track-level optics)
       const processedChildren = [];
       const isMov = (updates.outputFormat === 'mov');
       for (const c of nonUdtaChildren) {
         const chunk = new Uint8Array(moovBuffer, c.offset, c.size);
-        if (isMov && c.type === 'trak') {
+        if (c.type === 'trak') {
           const updatedTrak = updateVideoTrakBox(chunk, tags, !!updates.scrubAll);
           processedChildren.push(updatedTrak);
         } else {
@@ -3201,6 +3213,16 @@ document.addEventListener('DOMContentLoaded', () => {
     commentInput.value = meta.tags.comment || '';
     copyrightInput.value = meta.tags.copyright || '';
 
+    // Auto-select QuickTime (.mov) if input is Apple or .mov
+    const exportFormatSelect = document.getElementById('exportFormatSelect');
+    if (exportFormatSelect) {
+      const isMovFile = (currentFile && currentFile.name && currentFile.name.toLowerCase().endsWith('.mov'));
+      const isAppleMeta = (meta.tags && meta.tags.make && /apple/i.test(meta.tags.make));
+      if (isMovFile || isAppleMeta) {
+        exportFormatSelect.value = 'mov';
+      }
+    }
+
     // Populate Stream & Media Inspector specs
     if (meta.stream) {
       if (specCodec) {
@@ -3531,6 +3553,9 @@ document.addEventListener('DOMContentLoaded', () => {
       if (preset.horizontalAccuracy && !horizontalAccuracyInput.value) {
         horizontalAccuracyInput.value = preset.horizontalAccuracy;
       }
+      if (preset.make === 'Apple' && document.getElementById('exportFormatSelect')) {
+        document.getElementById('exportFormatSelect').value = 'mov';
+      }
       showToast(`Applied preset: ${preset.model}`, 'info');
     }
   });
@@ -3649,16 +3674,17 @@ document.addEventListener('DOMContentLoaded', () => {
       };
 
       const exportFormatSelect = document.getElementById('exportFormatSelect');
-      const formatSetting = exportFormatSelect ? exportFormatSelect.value : 'auto';
+      const isApple = (tags.make && /apple/i.test(tags.make)) || (tags.model && /iphone|ipad/i.test(tags.model));
+      const formatSetting = exportFormatSelect ? exportFormatSelect.value : (isApple ? 'mov' : 'auto');
       const isOriginalMov = (currentFile && currentFile.name && currentFile.name.toLowerCase().endsWith('.mov'));
-      let chosenFormat = 'mp4';
+      let chosenFormat = 'mov';
       if (formatSetting === 'mov') {
         chosenFormat = 'mov';
       } else if (formatSetting === 'mp4') {
         chosenFormat = 'mp4';
       } else {
-        // 'auto': strictly preserve original container so audio & stream codecs never glitch
-        chosenFormat = isOriginalMov ? 'mov' : 'mp4';
+        // 'auto': strictly preserve original container, or default to mov for Apple devices
+        chosenFormat = (isOriginalMov || isApple) ? 'mov' : 'mp4';
       }
 
       const updates = {
@@ -3709,4 +3735,4 @@ document.addEventListener('DOMContentLoaded', () => {
   </script>
 </body>
 </html>
- 
+
