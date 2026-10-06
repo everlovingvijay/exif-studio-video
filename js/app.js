@@ -365,6 +365,16 @@ document.addEventListener('DOMContentLoaded', () => {
     commentInput.value = meta.tags.comment || '';
     copyrightInput.value = meta.tags.copyright || '';
 
+    // Auto-select QuickTime (.mov) if input is Apple or .mov
+    const exportFormatSelect = document.getElementById('exportFormatSelect');
+    if (exportFormatSelect) {
+      const isMovFile = (currentFile && currentFile.name && currentFile.name.toLowerCase().endsWith('.mov'));
+      const isAppleMeta = (meta.tags && meta.tags.make && /apple/i.test(meta.tags.make));
+      if (isMovFile || isAppleMeta) {
+        exportFormatSelect.value = 'mov';
+      }
+    }
+
     // Populate Stream & Media Inspector specs
     if (meta.stream) {
       if (specCodec) {
@@ -695,6 +705,9 @@ document.addEventListener('DOMContentLoaded', () => {
       if (preset.horizontalAccuracy && !horizontalAccuracyInput.value) {
         horizontalAccuracyInput.value = preset.horizontalAccuracy;
       }
+      if (preset.make === 'Apple' && document.getElementById('exportFormatSelect')) {
+        document.getElementById('exportFormatSelect').value = 'mov';
+      }
       showToast(`Applied preset: ${preset.model}`, 'info');
     }
   });
@@ -813,16 +826,17 @@ document.addEventListener('DOMContentLoaded', () => {
       };
 
       const exportFormatSelect = document.getElementById('exportFormatSelect');
-      const formatSetting = exportFormatSelect ? exportFormatSelect.value : 'auto';
+      const isApple = (tags.make && /apple/i.test(tags.make)) || (tags.model && /iphone|ipad/i.test(tags.model));
+      const formatSetting = exportFormatSelect ? exportFormatSelect.value : (isApple ? 'mov' : 'auto');
       const isOriginalMov = (currentFile && currentFile.name && currentFile.name.toLowerCase().endsWith('.mov'));
-      let chosenFormat = 'mp4';
+      let chosenFormat = 'mov';
       if (formatSetting === 'mov') {
         chosenFormat = 'mov';
       } else if (formatSetting === 'mp4') {
         chosenFormat = 'mp4';
       } else {
-        // 'auto': strictly preserve original container so audio & stream codecs never glitch
-        chosenFormat = isOriginalMov ? 'mov' : 'mp4';
+        // 'auto': strictly preserve original container, or default to mov for Apple devices
+        chosenFormat = (isOriginalMov || isApple) ? 'mov' : 'mp4';
       }
 
       const updates = {
@@ -869,4 +883,3 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   });
 });
- 
