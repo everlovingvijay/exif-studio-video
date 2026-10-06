@@ -986,8 +986,26 @@ const MP4Editor = (function () {
         const mTp = readASCII(mdiaDv, mOff + 4, 4);
         if (mTp === 'hdlr' && mSz >= 20) {
           const hType = readASCII(mdiaDv, mOff + 16, 4);
-          if (hType === 'vide') isVideo = true;
-          else if (hType === 'soun' || hType === 'hint' || hType === 'meta') isVideo = false;
+          if (hType === 'vide') {
+            isVideo = true;
+          } else if (hType === 'soun' || hType === 'hint' || hType === 'meta') {
+            isVideo = false;
+            break;
+          }
+        } else if (mTp === 'minf' && mSz >= 16) {
+          // If minf contains smhd (sound media header), this is definitely an audio track
+          let subOff = mOff + 8;
+          while (subOff + 8 <= mOff + mSz) {
+            const subSz = mdiaDv.getUint32(subOff, false);
+            const subTp = readASCII(mdiaDv, subOff + 4, 4);
+            if (subTp === 'smhd') {
+              isVideo = false;
+              break;
+            }
+            if (subSz < 8) break;
+            subOff += subSz;
+          }
+          if (!isVideo) break;
         }
         if (mSz < 8) break;
         mOff += mSz;
@@ -1295,11 +1313,12 @@ const MP4Editor = (function () {
       const newUdta = buildUdtaBox(tags, locationString);
       const newMoovMeta = updates.scrubAll ? null : buildQuickTimeMetaBox(tags, locationString, cDateISO);
 
-      // 4. Process non-udta children (updating video track with track-level optics)
+      // 4. Process non-udta children (updating video track with track-level optics ONLY if QuickTime export)
       const processedChildren = [];
+      const isMov = (updates.outputFormat === 'mov');
       for (const c of nonUdtaChildren) {
         const chunk = new Uint8Array(moovBuffer, c.offset, c.size);
-        if (c.type === 'trak') {
+        if (isMov && c.type === 'trak') {
           const updatedTrak = updateVideoTrakBox(chunk, tags, !!updates.scrubAll);
           processedChildren.push(updatedTrak);
         } else {
@@ -1369,7 +1388,6 @@ const MP4Editor = (function () {
 
       // 9. If output format is QuickTime (.mov), ensure ftyp box starts with 'qt  ' major brand
       let updatedFtyp = null;
-      const isMov = (updates.outputFormat === 'mov');
       const ftypBox = topBoxes.find(b => b.type === 'ftyp');
       if (isMov && ftypBox && ftypBox.offset === 0 && ftypBox.size >= 20) {
         const ftypRaw = await readFileSlice(file, 0, ftypBox.size);
@@ -1435,4 +1453,3 @@ const MP4Editor = (function () {
 
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = MP4Editor;
-}
