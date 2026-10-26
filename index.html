@@ -849,7 +849,7 @@
                     <span class="badge" style="background:#6366f1;color:#fff;font-size:0.65rem;font-weight:600;padding:2px 6px;border-radius:4px;">Profile 8.4</span>
                   </div>
                   <p style="font-size: 0.8rem; color: var(--text-secondary); margin: 0; line-height: 1.4;">
-                    Configures sample entry FourCC <code>dvh1</code>, <code>dvvC</code> metadata, and BT.2020 HLG color space so Apple Photos displays the official <strong>Dolby Vision</strong> badge.
+                    Profile 8.4 metadata configuration. <em>Leave OFF for standard SDR or H.264 video to prevent black-screen playback in Apple decoders.</em>
                   </p>
                 </div>
                 <label class="switch">
@@ -2492,6 +2492,13 @@ const MP4Editor = (function () {
 
     if (entrySize < 86 || entryOffset + entrySize > stsdChild.size) return mdiaBytes;
 
+    // Dolby Vision Profile 8.4 is strictly an HEVC (Main 10) format.
+    // Injecting dvvC or BT.2020 HLG into H.264 (avc1) or 8-bit SDR streams causes hardware decoders
+    // (Apple VideoToolbox / AVFoundation) to fail on every frame, resulting in black-screen playback.
+    if (entryType !== 'hvc1' && entryType !== 'hev1' && entryType !== 'dvh1' && entryType !== 'dvhe') {
+      return mdiaBytes;
+    }
+
     // Parse all existing child boxes of entry 0
     const existingChildBoxes = [];
     let subO = entryOffset + 86;
@@ -2751,11 +2758,6 @@ const MP4Editor = (function () {
         trakCopyOff += c.size;
       }
     }
-    if (newTrakMeta) {
-      newTrakBytes.set(newTrakMeta, trakCopyOff);
-    }
-
-    return newTrakBytes;
     if (newTrakMeta) {
       newTrakBytes.set(newTrakMeta, trakCopyOff);
     }
@@ -3777,7 +3779,7 @@ document.addEventListener('DOMContentLoaded', () => {
       focalLength35mm: '26',
       fNumber: '1.6',
       cameraIdentifier: 'Back',
-      dolbyVision: true,
+      dolbyVision: false,
       horizontalAccuracy: '10.84'
     },
     'iphone16promax': {
@@ -3788,7 +3790,7 @@ document.addEventListener('DOMContentLoaded', () => {
       focalLength35mm: '24',
       fNumber: '1.78',
       cameraIdentifier: 'Back',
-      dolbyVision: true,
+      dolbyVision: false,
       horizontalAccuracy: '5.00'
     },
     'iphone15pro': {
@@ -3799,7 +3801,7 @@ document.addEventListener('DOMContentLoaded', () => {
       focalLength35mm: '24',
       fNumber: '1.78',
       cameraIdentifier: 'Back',
-      dolbyVision: true,
+      dolbyVision: false,
       horizontalAccuracy: '5.00'
     },
     's24ultra': {
