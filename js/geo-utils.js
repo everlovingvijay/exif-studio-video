@@ -81,6 +81,50 @@ const GeoUtils = {
       : deg >= 0 ? 'E' : 'W';
 
     return `${degrees}° ${minutes}' ${seconds}" ${direction}`;
+  },
+
+  /**
+   * Formats latitude, longitude, and optional altitude into standard XMP/EXIF RDF format.
+   * Recognized by social platforms (Instagram, Facebook), Google Photos, Adobe Premiere, and ExifTool.
+   * @param {number} lat
+   * @param {number} lon
+   * @param {number|null} [alt=null]
+   * @returns {{latitude: string, longitude: string, latitudeRef: string, longitudeRef: string, altitude: string|null, altitudeRef: string, coordinates: string}|null}
+   */
+  toXMPGPS(lat, lon, alt = null) {
+    if (lat === null || lon === null || isNaN(lat) || isNaN(lon)) return null;
+
+    const latAbs = Math.abs(lat);
+    const latDeg = Math.floor(latAbs);
+    const latMin = (latAbs - latDeg) * 60;
+    const latRef = lat >= 0 ? 'N' : 'S';
+    const latXMP = `${String(latDeg).padStart(2, '0')},${latMin.toFixed(6)}${latRef}`;
+
+    const lonAbs = Math.abs(lon);
+    const lonDeg = Math.floor(lonAbs);
+    const lonMin = (lonAbs - lonDeg) * 60;
+    const lonRef = lon >= 0 ? 'E' : 'W';
+    const lonXMP = `${String(lonDeg).padStart(3, '0')},${lonMin.toFixed(6)}${lonRef}`;
+
+    let altXMP = null;
+    let altRef = '0';
+    if (alt !== null && alt !== '' && !isNaN(alt)) {
+      const altNum = parseFloat(alt);
+      altRef = altNum < 0 ? '1' : '0';
+      altXMP = `${Math.round(Math.abs(altNum) * 100)}/100`;
+    }
+
+    const coordsXMP = `${latAbs.toFixed(6)} ${latRef}, ${lonAbs.toFixed(6)} ${lonRef}`;
+
+    return {
+      latitude: latXMP,
+      longitude: lonXMP,
+      latitudeRef: latRef,
+      longitudeRef: lonRef,
+      altitude: altXMP,
+      altitudeRef: altRef,
+      coordinates: coordsXMP
+    };
   }
 };
 
