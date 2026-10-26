@@ -637,17 +637,25 @@ const MP4Editor = (function () {
   }
 
   /**
-   * Helper: Builds an XMP ('XMP_') atom containing standard RDF camera & lens metadata.
-   * Widely read by Apple Photos, Adobe Premiere, Final Cut Pro, and ExifTool.
+   * Helper: Builds an XMP ('XMP_') atom containing standard RDF camera, lens, and GPS metadata.
+   * Recognized by Apple Photos, Adobe Premiere, Final Cut Pro, ExifTool, Instagram, and Facebook.
    */
-  function buildXMPBox(tags) {
+  function buildXMPBox(tags, location) {
     const cleanFNumber = tags.fNumber ? String(tags.fNumber).replace(/^[fF]\/?/, '') : '';
     const lens = tags.lensModel || '';
     const make = tags.make || '';
     const model = tags.model || '';
     const focal35 = tags.focalLength35mm || '';
 
-    if (!lens && !make && !model && !focal35 && !cleanFNumber) return null;
+    // Extract GPS data for XMP if location coordinates exist
+    let gps = null;
+    if (location && typeof location.latitude === 'number' && typeof location.longitude === 'number') {
+      if (typeof GeoUtils !== 'undefined' && typeof GeoUtils.toXMPGPS === 'function') {
+        gps = GeoUtils.toXMPGPS(location.latitude, location.longitude, location.altitude);
+      }
+    }
+
+    if (!lens && !make && !model && !focal35 && !cleanFNumber && !gps) return null;
 
     function esc(s) {
       return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
@@ -661,7 +669,9 @@ const MP4Editor = (function () {
       '    xmlns:tiff="http://ns.adobe.com/tiff/1.0/"\n' +
       '    xmlns:exif="http://ns.adobe.com/exif/1.0/"\n' +
       '    xmlns:exifEX="http://cipa.jp/exif/1.0/"\n' +
-      '    xmlns:aux="http://ns.adobe.com/exif/1.0/aux/"' +
+      '    xmlns:aux="http://ns.adobe.com/exif/1.0/aux/"\n' +
+      '    xmlns:xmp="http://ns.adobe.com/xap/1.0/"\n' +
+      '    xmlns:photoshop="http://ns.adobe.com/photoshop/1.0/"' +
       (make ? '\n    tiff:Make="' + esc(make) + '"' : '') +
       (model ? '\n    tiff:Model="' + esc(model) + '"' : '') +
       (lens ? '\n    exif:LensModel="' + esc(lens) + '"' : '') +
@@ -670,7 +680,27 @@ const MP4Editor = (function () {
       (focal35 ? '\n    exif:FocalLengthIn35mmFilm="' + esc(focal35) + '"' : '') +
       (cleanFNumber ? '\n    exif:FNumber="' + esc(cleanFNumber) + '"' : '') +
       (cleanFNumber ? '\n    exif:ApertureValue="' + esc(cleanFNumber) + '"' : '') +
+      (gps ? '\n    exif:GPSLatitude="' + esc(gps.latitude) + '"' : '') +
+      (gps ? '\n    exif:GPSLongitude="' + esc(gps.longitude) + '"' : '') +
+      (gps ? '\n    exif:GPSLatitudeRef="' + esc(gps.latitudeRef) + '"' : '') +
+      (gps ? '\n    exif:GPSLongitudeRef="' + esc(gps.longitudeRef) + '"' : '') +
+      (gps ? '\n    exif:GPSAltitudeRef="' + esc(gps.altitudeRef) + '"' : '') +
+      (gps && gps.altitude ? '\n    exif:GPSAltitude="' + esc(gps.altitude) + '"' : '') +
+      (gps ? '\n    exif:GPSCoordinates="' + esc(gps.coordinates) + '"' : '') +
+      (gps ? '\n    exif:GPSMapDatum="WGS-84"' : '') +
+      (gps ? '\n    exif:GPSVersionID="2.3.0.0"' : '') +
+      (tags.locationName ? '\n    photoshop:City="' + esc(tags.locationName) + '"' : '') +
       '>\n' +
+      (gps ? '    <exif:GPSLatitude>' + esc(gps.latitude) + '</exif:GPSLatitude>\n' : '') +
+      (gps ? '    <exif:GPSLongitude>' + esc(gps.longitude) + '</exif:GPSLongitude>\n' : '') +
+      (gps ? '    <exif:GPSLatitudeRef>' + esc(gps.latitudeRef) + '</exif:GPSLatitudeRef>\n' : '') +
+      (gps ? '    <exif:GPSLongitudeRef>' + esc(gps.longitudeRef) + '</exif:GPSLongitudeRef>\n' : '') +
+      (gps ? '    <exif:GPSAltitudeRef>' + esc(gps.altitudeRef) + '</exif:GPSAltitudeRef>\n' : '') +
+      (gps && gps.altitude ? '    <exif:GPSAltitude>' + esc(gps.altitude) + '</exif:GPSAltitude>\n' : '') +
+      (gps ? '    <exif:GPSCoordinates>' + esc(gps.coordinates) + '</exif:GPSCoordinates>\n' : '') +
+      (gps ? '    <exif:GPSMapDatum>WGS-84</exif:GPSMapDatum>\n' : '') +
+      (gps ? '    <exif:GPSVersionID>2.3.0.0</exif:GPSVersionID>\n' : '') +
+      (tags.locationName ? '    <photoshop:City>' + esc(tags.locationName) + '</photoshop:City>\n' : '') +
       '  </rdf:Description>\n' +
       ' </rdf:RDF>\n' +
       '</x:xmpmeta>\n' +
@@ -681,23 +711,24 @@ const MP4Editor = (function () {
   }
 
   /**
-   * Creates a 'udta' (User Data) box containing GPS ('©xyz'), 'meta.ilst' tags, and 'XMP_'.
+   * Creates a 'udta' (User Data) box containing GPS ('©xyz'), 'meta.ilst' tags, and dual XMP ('XMP_' & 'uuid').
    */
-  function buildUdtaBox(tags, locationString) {
+  function buildUdtaBox(tags, locationString, location) {
     const parts = [];
 
-    // 1. Add GPS '©xyz' box if location exists
+    // 1. Add GPS '©xyz' box if location exists (Apple QuickTime standard, 0x15c7 English language code)
     if (locationString) {
       const locBytes = encodeUTF8(locationString);
       const xyzPayload = new Uint8Array(2 + locBytes.length);
       const dv = new DataView(xyzPayload.buffer);
-      dv.setUint16(0, 0); // Neutral language (universal compatibility)
+      dv.setUint16(0, 0x15c7); // Standard language code (Apple standard 'en' = 0x15c7)
       xyzPayload.set(locBytes, 2);
       parts.push(createBox('©xyz', xyzPayload));
     }
 
     // 2. Build 'meta.ilst' tags
     const ilstParts = [];
+    if (locationString) ilstParts.push(createIlstStringTag('©xyz', locationString));
     if (tags.title) ilstParts.push(createIlstStringTag('©nam', tags.title));
     if (tags.artist) ilstParts.push(createIlstStringTag('©ART', tags.artist));
     if (tags.album) ilstParts.push(createIlstStringTag('©alb', tags.album));
@@ -740,10 +771,22 @@ const MP4Editor = (function () {
       parts.push(metaBox);
     }
 
-    // 3. Add XMP packet ('XMP_') inside udta
-    const xmpBox = buildXMPBox(tags);
+    // 3. Add XMP packet ('XMP_') and standard ISOBMFF XMP UUID box inside udta
+    const xmpBox = buildXMPBox(tags, location);
     if (xmpBox) {
       parts.push(xmpBox);
+
+      // Standard ISOBMFF XMP UUID box (BE7ACFCB-97A9-42E8-9C71-999491E3AFAC)
+      // Read by Android, Instagram, Facebook, and Adobe Premiere
+      const xmpRawPayload = xmpBox.subarray(8);
+      const uuidHeader = new Uint8Array([
+        0xbe, 0x7a, 0xcf, 0xcb, 0x97, 0xa9, 0x42, 0xe8,
+        0x9c, 0x71, 0x99, 0x94, 0x91, 0xe3, 0xaf, 0xac
+      ]);
+      const uuidBoxPayload = new Uint8Array(16 + xmpRawPayload.length);
+      uuidBoxPayload.set(uuidHeader, 0);
+      uuidBoxPayload.set(xmpRawPayload, 16);
+      parts.push(createBox('uuid', uuidBoxPayload));
     }
 
     if (parts.length === 0) return null;
@@ -860,6 +903,8 @@ const MP4Editor = (function () {
       { name: 'location.accuracy.horizontal', val: tags.horizontalAccuracy },
       { name: 'com.apple.quicktime.location.ISO6709', val: locationString },
       { name: 'location.ISO6709', val: locationString },
+      { name: 'com.apple.quicktime.location.name', val: tags.locationName },
+      { name: 'location.name', val: tags.locationName },
       { name: 'com.apple.quicktime.make', val: tags.make },
       { name: 'make', val: tags.make },
       { name: 'com.apple.quicktime.model', val: tags.model },
@@ -912,18 +957,23 @@ const MP4Editor = (function () {
   }
 
   /**
-   * Helper: Builds Dolby Vision Configuration Box ('dvvC', 24 bytes).
-   * Signals Dolby Vision Profile 8.4 (HLG compatibility).
+   * Helper: Builds Dolby Vision Configuration Box ('dvvC', 32 bytes total).
+   * Signals Dolby Vision Profile 8.4 (HLG compatibility per Apple TN3145).
    */
   function buildDvvCBox(is4K) {
-    const payload = new Uint8Array(16);
-    payload[0] = 1; // dv_version_major
-    payload[1] = 0; // dv_version_minor
-    const level = is4K ? 7 : 4; // level 7 for 4K+, level 4 for 1080p
-    payload[2] = (8 << 1) | (level >> 5); // profile 8
-    payload[3] = ((level & 0x1F) << 3) | (1 << 2) | (0 << 1) | 1; // rpu=1, bl=1
-    payload[4] = 0x40; // compatibility_id = 4 (HLG)
-    // remaining 11 bytes: 0 reserved
+    const payload = new Uint8Array(24);
+    payload[0] = 1; // dv_version_major = 1
+    payload[1] = 0; // dv_version_minor = 0
+    const profile = 8; // Profile 8
+    const level = is4K ? 7 : 4; // level 7 for 4K 60fps, level 4 for 1080p
+    const rpu = 1;
+    const el = 0;
+    const bl = 1;
+    const val16 = (profile << 9) | (level << 3) | (rpu << 2) | (el << 1) | bl;
+    payload[2] = (val16 >> 8) & 0xFF;
+    payload[3] = val16 & 0xFF;
+    payload[4] = 0x40; // compatibility_id = 4 (HLG BT.2100-1) in top 4 bits
+    // remaining 19 bytes are 0x00 reserved
     return createBox('dvvC', payload);
   }
 
@@ -943,11 +993,228 @@ const MP4Editor = (function () {
   }
 
   /**
+   * Helper: Builds Ambient Viewing Environment Box ('amve', 16 bytes).
+   * Mandatory for Dolby Vision Profile 8.4 per Apple TN3145.
+   */
+  function buildAmveBox() {
+    const payload = new Uint8Array(8);
+    const dv = new DataView(payload.buffer);
+    dv.setUint32(0, 3140000, false); // ambient_illuminance: 314 lux * 10000 per Apple TN3145
+    dv.setUint16(4, 15635, false);   // ambient_light_x: 0.3127 * 50000 (D65 white point)
+    dv.setUint16(6, 16450, false);   // ambient_light_y: 0.3290 * 50000 (D65 white point)
+    return createBox('amve', payload);
+  }
+
+  /**
+   * Injects Dolby Vision Profile 8.4 atoms (dvvC, colr, amve) into mdia.minf.stbl.stsd visual sample entry.
+   */
+  function updateMdiaBoxForDolbyVision(mdiaBytes, trackWidth, trackHeight) {
+    const mdiaDv = new DataView(mdiaBytes.buffer, mdiaBytes.byteOffset, mdiaBytes.byteLength);
+    const mdiaSize = mdiaDv.getUint32(0, false);
+
+    // Parse children of mdia
+    const mdiaChildren = [];
+    let mOff = 8;
+    while (mOff + 8 <= mdiaSize) {
+      const sz = mdiaDv.getUint32(mOff, false);
+      const tp = readASCII(mdiaDv, mOff + 4, 4);
+      mdiaChildren.push({ type: tp, offset: mOff, size: sz });
+      if (sz < 8) break;
+      mOff += sz;
+    }
+
+    const minfChild = mdiaChildren.find(c => c.type === 'minf');
+    if (!minfChild) return mdiaBytes;
+
+    const minfBytes = mdiaBytes.subarray(minfChild.offset, minfChild.offset + minfChild.size);
+    const minfDv = new DataView(minfBytes.buffer, minfBytes.byteOffset, minfBytes.byteLength);
+    const minfSize = minfChild.size;
+
+    // Parse children of minf
+    const minfChildren = [];
+    let miOff = 8;
+    while (miOff + 8 <= minfSize) {
+      const sz = minfDv.getUint32(miOff, false);
+      const tp = readASCII(minfDv, miOff + 4, 4);
+      minfChildren.push({ type: tp, offset: miOff, size: sz });
+      if (sz < 8) break;
+      miOff += sz;
+    }
+
+    const stblChild = minfChildren.find(c => c.type === 'stbl');
+    if (!stblChild) return mdiaBytes;
+
+    const stblBytes = minfBytes.subarray(stblChild.offset, stblChild.offset + stblChild.size);
+    const stblDv = new DataView(stblBytes.buffer, stblBytes.byteOffset, stblBytes.byteLength);
+    const stblSize = stblChild.size;
+
+    // Parse children of stbl
+    const stblChildren = [];
+    let sOff = 8;
+    while (sOff + 8 <= stblSize) {
+      const sz = stblDv.getUint32(sOff, false);
+      const tp = readASCII(stblDv, sOff + 4, 4);
+      stblChildren.push({ type: tp, offset: sOff, size: sz });
+      if (sz < 8) break;
+      sOff += sz;
+    }
+
+    const stsdChild = stblChildren.find(c => c.type === 'stsd');
+    if (!stsdChild || stsdChild.size < 16) return mdiaBytes;
+
+    const stsdBytes = stblBytes.subarray(stsdChild.offset, stsdChild.offset + stsdChild.size);
+    const stsdDv = new DataView(stsdBytes.buffer, stsdBytes.byteOffset, stsdBytes.byteLength);
+    const entryCount = stsdDv.getUint32(12, false);
+    if (entryCount < 1) return mdiaBytes;
+
+    // Entry 0 in stsd
+    const entryOffset = 16;
+    if (entryOffset + 8 > stsdChild.size) return mdiaBytes;
+    const entrySize = stsdDv.getUint32(entryOffset, false);
+    const entryType = readASCII(stsdDv, entryOffset + 4, 4);
+
+    if (entrySize < 86 || entryOffset + entrySize > stsdChild.size) return mdiaBytes;
+
+    // Parse all existing child boxes of entry 0
+    const existingChildBoxes = [];
+    let subO = entryOffset + 86;
+    while (subO + 8 <= entryOffset + entrySize) {
+      const sbSz = stsdDv.getUint32(subO, false);
+      if (sbSz < 8 || subO + sbSz > entryOffset + entrySize) break;
+      const sbTp = readASCII(stsdDv, subO + 4, 4);
+      existingChildBoxes.push({
+        type: sbTp,
+        bytes: stsdBytes.subarray(subO, subO + sbSz)
+      });
+      subO += sbSz;
+    }
+
+    const is4K = (trackWidth >= 3840 || trackHeight >= 2160);
+    const dvvCBox = buildDvvCBox(is4K);
+    const colrBox = buildColrBox();
+    const amveBox = buildAmveBox();
+
+    // Build the final ordered list of child boxes for Dolby Vision Profile 8.4:
+    // 1. Keep codec configuration box (e.g. hvcC, avcC)
+    // 2. Insert/replace colr with BT.2020/HLG nclx box
+    // 3. Keep any aspect ratio boxes (pasp, clap)
+    // 4. Insert/replace dvvC box
+    // 5. Insert/replace amve box
+    const finalChildBoxes = [];
+    let placedColr = false;
+    let placedDvvC = false;
+    let placedAmve = false;
+
+    for (const b of existingChildBoxes) {
+      if (b.type === 'colr') {
+        finalChildBoxes.push(colrBox);
+        placedColr = true;
+      } else if (b.type === 'dvvC' || b.type === 'dvcC') {
+        finalChildBoxes.push(dvvCBox);
+        placedDvvC = true;
+      } else if (b.type === 'amve') {
+        finalChildBoxes.push(amveBox);
+        placedAmve = true;
+      } else {
+        finalChildBoxes.push(b.bytes);
+      }
+    }
+
+    if (!placedColr) finalChildBoxes.push(colrBox);
+    if (!placedDvvC) finalChildBoxes.push(dvvCBox);
+    if (!placedAmve) finalChildBoxes.push(amveBox);
+
+    // Rebuild Entry 0 without any trailing corrupt zeroes
+    const totalChildrenSize = finalChildBoxes.reduce((acc, b) => acc + b.length, 0);
+    const newEntrySize = 86 + totalChildrenSize;
+    const newEntryBytes = new Uint8Array(newEntrySize);
+    newEntryBytes.set(stsdBytes.subarray(entryOffset, entryOffset + 86), 0);
+    const newEntryDv = new DataView(newEntryBytes.buffer);
+    writeUint32(newEntryDv, 0, newEntrySize);
+    if (entryType === 'hev1') {
+      writeASCII(newEntryDv, 4, 'hvc1');
+    }
+
+    let bOff = 86;
+    for (const b of finalChildBoxes) {
+      newEntryBytes.set(b, bOff);
+      bOff += b.length;
+    }
+
+    const addedSize = newEntrySize - entrySize;
+
+    // Rebuild stsd
+    const newStsdSize = stsdChild.size + addedSize;
+    const newStsdBytes = new Uint8Array(newStsdSize);
+    const newStsdDv = new DataView(newStsdBytes.buffer);
+    writeUint32(newStsdDv, 0, newStsdSize);
+    writeASCII(newStsdDv, 4, 'stsd');
+    newStsdBytes.set(stsdBytes.subarray(8, entryOffset), 8); // version, flags, entry count
+    newStsdBytes.set(newEntryBytes, entryOffset);
+    if (entryOffset + entrySize < stsdChild.size) {
+      newStsdBytes.set(stsdBytes.subarray(entryOffset + entrySize), entryOffset + newEntryBytes.length);
+    }
+
+    // Rebuild stbl
+    const newStblSize = stblSize + addedSize;
+    const newStblBytes = new Uint8Array(newStblSize);
+    const newStblDv = new DataView(newStblBytes.buffer);
+    writeUint32(newStblDv, 0, newStblSize);
+    writeASCII(newStblDv, 4, 'stbl');
+    let stblCopyOff = 8;
+    for (const c of stblChildren) {
+      if (c.type === 'stsd') {
+        newStblBytes.set(newStsdBytes, stblCopyOff);
+        stblCopyOff += newStsdBytes.length;
+      } else {
+        newStblBytes.set(stblBytes.subarray(c.offset, c.offset + c.size), stblCopyOff);
+        stblCopyOff += c.size;
+      }
+    }
+
+    // Rebuild minf
+    const newMinfSize = minfSize + addedSize;
+    const newMinfBytes = new Uint8Array(newMinfSize);
+    const newMinfDv = new DataView(newMinfBytes.buffer);
+    writeUint32(newMinfDv, 0, newMinfSize);
+    writeASCII(newMinfDv, 4, 'minf');
+    let minfCopyOff = 8;
+    for (const c of minfChildren) {
+      if (c.type === 'stbl') {
+        newMinfBytes.set(newStblBytes, minfCopyOff);
+        minfCopyOff += newStblBytes.length;
+      } else {
+        newMinfBytes.set(minfBytes.subarray(c.offset, c.offset + c.size), minfCopyOff);
+        minfCopyOff += c.size;
+      }
+    }
+
+    // Rebuild mdia
+    const newMdiaSize = mdiaSize + addedSize;
+    const newMdiaBytes = new Uint8Array(newMdiaSize);
+    const newMdiaDv = new DataView(newMdiaBytes.buffer);
+    writeUint32(newMdiaDv, 0, newMdiaSize);
+    writeASCII(newMdiaDv, 4, 'mdia');
+    let mdiaCopyOff = 8;
+    for (const c of mdiaChildren) {
+      if (c.type === 'minf') {
+        newMdiaBytes.set(newMinfBytes, mdiaCopyOff);
+        mdiaCopyOff += newMinfBytes.length;
+      } else {
+        newMdiaBytes.set(mdiaBytes.subarray(c.offset, c.offset + c.size), mdiaCopyOff);
+        mdiaCopyOff += c.size;
+      }
+    }
+
+    return newMdiaBytes;
+  }
+
+  /**
    * Updates a video track (trak) box:
    * Injects/updates track-level 'meta' box (AVFoundation videoTrack.metadata for lens & optics).
-   * Leaves media stream sample descriptions (stsd) 100% untouched to ensure video playback never fails.
+   * If dolbyVision is enabled, cleanly injects dvvC, colr, and amve into stsd visual sample entry.
    */
-  function updateVideoTrakBox(trakBytes, tags, scrubAll) {
+  function updateVideoTrakBox(trakBytes, tags, scrubAll, dolbyVision) {
     const dv = new DataView(trakBytes.buffer, trakBytes.byteOffset, trakBytes.byteLength);
     const trakSize = dv.getUint32(0, false);
 
@@ -1031,10 +1298,24 @@ const MP4Editor = (function () {
     const nonMetaChildren = children.filter(c => c.type !== 'meta');
     const newTrakMeta = scrubAll ? null : buildTrackMetaBox(tags);
 
-    // Assemble new trak box with all media stream boxes (mdia, stsd, etc.) 100% untouched
+    // If Dolby Vision is requested, update mdia (stsd sample entry) with dvvC, colr, amve
+    let updatedMdiaBytes = null;
+    if (!scrubAll && dolbyVision && mdiaChild) {
+      updatedMdiaBytes = updateMdiaBoxForDolbyVision(
+        trakBytes.subarray(mdiaChild.offset, mdiaChild.offset + mdiaChild.size),
+        trackWidth,
+        trackHeight
+      );
+    }
+
+    // Assemble new trak box
     let newTrakSz = 8;
     for (const c of nonMetaChildren) {
-      newTrakSz += c.size;
+      if (c.type === 'mdia' && updatedMdiaBytes) {
+        newTrakSz += updatedMdiaBytes.length;
+      } else {
+        newTrakSz += c.size;
+      }
     }
     if (newTrakMeta) newTrakSz += newTrakMeta.length;
 
@@ -1045,9 +1326,19 @@ const MP4Editor = (function () {
 
     let trakCopyOff = 8;
     for (const c of nonMetaChildren) {
-      newTrakBytes.set(trakBytes.subarray(c.offset, c.offset + c.size), trakCopyOff);
-      trakCopyOff += c.size;
+      if (c.type === 'mdia' && updatedMdiaBytes) {
+        newTrakBytes.set(updatedMdiaBytes, trakCopyOff);
+        trakCopyOff += updatedMdiaBytes.length;
+      } else {
+        newTrakBytes.set(trakBytes.subarray(c.offset, c.offset + c.size), trakCopyOff);
+        trakCopyOff += c.size;
+      }
     }
+    if (newTrakMeta) {
+      newTrakBytes.set(newTrakMeta, trakCopyOff);
+    }
+
+    return newTrakBytes;
     if (newTrakMeta) {
       newTrakBytes.set(newTrakMeta, trakCopyOff);
     }
@@ -1322,16 +1613,17 @@ const MP4Editor = (function () {
 
       const tags = updates.scrubAll ? {} : (updates.tags || {});
       const cDateISO = (!updates.scrubAll && updates.creationDate) ? formatISOWithTimezone(updates.creationDate) : '';
-      const newUdta = buildUdtaBox(tags, locationString);
+      const newUdta = buildUdtaBox(tags, locationString, updates.scrubAll ? null : updates.location);
       const newMoovMeta = updates.scrubAll ? null : buildQuickTimeMetaBox(tags, locationString, cDateISO);
 
-      // 4. Process non-udta children (updating video track with track-level optics)
+      // 4. Process non-udta children (updating video track with track-level optics & Dolby Vision)
       const processedChildren = [];
       const isMov = (updates.outputFormat === 'mov');
+      const isDolby = !updates.scrubAll && (!!updates.dolbyVision || !!(tags && tags.dolbyVision));
       for (const c of nonUdtaChildren) {
         const chunk = new Uint8Array(moovBuffer, c.offset, c.size);
         if (c.type === 'trak') {
-          const updatedTrak = updateVideoTrakBox(chunk, tags, !!updates.scrubAll);
+          const updatedTrak = updateVideoTrakBox(chunk, tags, !!updates.scrubAll, isDolby);
           processedChildren.push(updatedTrak);
         } else {
           processedChildren.push(chunk);
