@@ -596,6 +596,7 @@ document.addEventListener('DOMContentLoaded', () => {
       focalLength35mm: '26',
       fNumber: '1.6',
       cameraIdentifier: 'Back',
+      dolbyVision: true,
       horizontalAccuracy: '10.84'
     },
     'iphone16promax': {
@@ -606,6 +607,7 @@ document.addEventListener('DOMContentLoaded', () => {
       focalLength35mm: '24',
       fNumber: '1.78',
       cameraIdentifier: 'Back',
+      dolbyVision: true,
       horizontalAccuracy: '5.00'
     },
     'iphone15pro': {
@@ -616,6 +618,7 @@ document.addEventListener('DOMContentLoaded', () => {
       focalLength35mm: '24',
       fNumber: '1.78',
       cameraIdentifier: 'Back',
+      dolbyVision: true,
       horizontalAccuracy: '5.00'
     },
     's24ultra': {
@@ -698,6 +701,9 @@ document.addEventListener('DOMContentLoaded', () => {
       fNumberInput.value = preset.fNumber || '';
       if (cameraIdentifierInput) {
         cameraIdentifierInput.value = preset.cameraIdentifier || 'Back';
+      }
+      if (dolbyVisionToggle && typeof preset.dolbyVision === 'boolean') {
+        dolbyVisionToggle.checked = preset.dolbyVision;
       }
       if (preset.horizontalAccuracy && !horizontalAccuracyInput.value) {
         horizontalAccuracyInput.value = preset.horizontalAccuracy;
@@ -803,6 +809,7 @@ document.addEventListener('DOMContentLoaded', () => {
         };
       }
 
+      const isDolby = dolbyVisionToggle ? dolbyVisionToggle.checked : false;
       const tags = {
         title: titleInput.value.trim(),
         artist: artistInput.value.trim(),
@@ -816,7 +823,9 @@ document.addEventListener('DOMContentLoaded', () => {
         focalLength35mm: focalLengthInput.value.trim(),
         fNumber: fNumberInput.value.trim(),
         cameraIdentifier: cameraIdentifierInput ? cameraIdentifierInput.value.trim() : 'Back',
-        horizontalAccuracy: horizontalAccuracyInput.value.trim()
+        horizontalAccuracy: horizontalAccuracyInput.value.trim(),
+        locationName: locationSearchInput ? locationSearchInput.value.trim() : '',
+        dolbyVision: isDolby
       };
 
       const exportFormatSelect = document.getElementById('exportFormatSelect');
@@ -837,6 +846,7 @@ document.addEventListener('DOMContentLoaded', () => {
         modifyDate: mDate,
         location,
         tags,
+        dolbyVision: isDolby,
         outputFormat: chosenFormat,
         rotation: userChangedRotation ? selectedRotation : undefined,
         c2pa: activeC2PA,
