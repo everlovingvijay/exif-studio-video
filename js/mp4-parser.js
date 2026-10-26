@@ -1075,6 +1075,13 @@ const MP4Editor = (function () {
 
     if (entrySize < 86 || entryOffset + entrySize > stsdChild.size) return mdiaBytes;
 
+    // Dolby Vision Profile 8.4 is strictly an HEVC (Main 10) format.
+    // Injecting dvvC or BT.2020 HLG into H.264 (avc1) or 8-bit SDR streams causes hardware decoders
+    // (Apple VideoToolbox / AVFoundation) to fail on every frame, resulting in black-screen playback.
+    if (entryType !== 'hvc1' && entryType !== 'hev1' && entryType !== 'dvh1' && entryType !== 'dvhe') {
+      return mdiaBytes;
+    }
+
     // Parse all existing child boxes of entry 0
     const existingChildBoxes = [];
     let subO = entryOffset + 86;
@@ -1334,11 +1341,6 @@ const MP4Editor = (function () {
         trakCopyOff += c.size;
       }
     }
-    if (newTrakMeta) {
-      newTrakBytes.set(newTrakMeta, trakCopyOff);
-    }
-
-    return newTrakBytes;
     if (newTrakMeta) {
       newTrakBytes.set(newTrakMeta, trakCopyOff);
     }
