@@ -596,7 +596,7 @@ document.addEventListener('DOMContentLoaded', () => {
       focalLength35mm: '26',
       fNumber: '1.6',
       cameraIdentifier: 'Back',
-      dolbyVision: true,
+      dolbyVision: false,
       horizontalAccuracy: '10.84'
     },
     'iphone16promax': {
@@ -607,7 +607,7 @@ document.addEventListener('DOMContentLoaded', () => {
       focalLength35mm: '24',
       fNumber: '1.78',
       cameraIdentifier: 'Back',
-      dolbyVision: true,
+      dolbyVision: false,
       horizontalAccuracy: '5.00'
     },
     'iphone15pro': {
@@ -618,7 +618,7 @@ document.addEventListener('DOMContentLoaded', () => {
       focalLength35mm: '24',
       fNumber: '1.78',
       cameraIdentifier: 'Back',
-      dolbyVision: true,
+      dolbyVision: false,
       horizontalAccuracy: '5.00'
     },
     's24ultra': {
